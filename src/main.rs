@@ -14,6 +14,8 @@
 //      N: 4-bit constant
 //      X and Y: 4-bit register identifier
 
+use std::{fs, thread, time::Duration};
+
 mod display;
 
 type Addr = u16; // in reality u12
@@ -26,8 +28,39 @@ struct Memory {
     bytes: [u8; 4096],
 }
 
-struct Stack<'a> {
-    addresses: &'a [Addr],
+impl Memory {
+    fn new() -> Self {
+        Self { bytes: [0; 4096] }
+    }
+
+    // loads program instructions starting at address 0x09F
+    fn load_rom(&mut self, path: &str) {
+        let program = fs::read(path);
+        let program = program.unwrap();
+
+        let start_index = 0x09F;
+        if start_index + program.len() <= 4096 {
+            self.bytes[start_index..start_index + program.len()].copy_from_slice(&program);
+        }
+    }
+}
+
+struct Stack {
+    addresses: Vec<Addr>,
+}
+
+impl Stack {
+    fn new() -> Self {
+        Self { addresses: vec![] }
+    }
+
+    fn push(&mut self, addr: Addr) {
+        self.addresses.push(addr)
+    }
+
+    fn pop(&mut self) -> Option<Addr> {
+        self.addresses.pop()
+    }
 }
 
 /* High level abstractions */
@@ -81,26 +114,70 @@ impl Timer {
 
 enum Register {
     // General purpose variable registers from 0 - F
-    V0(Addr),
-    V1(Addr),
-    V2(Addr),
-    V3(Addr),
-    V4(Addr),
-    V5(Addr),
-    V6(Addr),
-    V7(Addr),
-    V8(Addr),
-    V9(Addr),
-    VA(Addr),
-    VB(Addr),
-    VC(Addr),
-    VD(Addr),
-    VE(Addr),
-    VF(Addr),
+    V0(),
+    V1(),
+    V2(),
+    V3(),
+    V4(),
+    V5(),
+    V6(),
+    V7(),
+    V8(),
+    V9(),
+    VA(),
+    VB(),
+    VC(),
+    VD(),
+    VE(),
+    VF(),
+}
 
-    // Special registers
-    PC(Addr),
-    I(Addr),
+struct VariableRegister {
+    label: u8, // in reality u4 (0 - F)
+    data: u8,
+}
+
+// Special registers
+struct ProgramCounter(Addr);
+
+struct IndexRegister(Addr);
+
+struct RawInstruction(u16);
+
+impl RawInstruction {
+    fn nth_m_digits(&self, n: u8, m: u8) -> u16 {
+        // 0110 1100 1111 0001
+        // -------------------
+        // 1111 1111 1111 1111
+        //      1111 1111 1111
+        //           1111 1111
+        //                1111
+        //
+        // 4 - (1) - (n - 1), n = 2
+        // 4 - (m) - (n - 1), n = 2
+        let shift_places = (4 - m - (n - 1)) * 4;
+        let mut mask = 0;
+        for _ in 0..m {
+            mask = (mask << 4) | 0b1111;
+        }
+        (self.0 & (mask << shift_places)) >> shift_places
+    }
+}
+
+impl PartialEq<u16> for RawInstruction {
+    fn eq(&self, ins: &u16) -> bool {
+        self.0 == ins
+    }
+}
+
+#[test]
+fn test_bit_manip() {
+    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(2, 1), 0xC);
+    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(3, 1), 0xE);
+    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(1, 1), 0x4);
+
+    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(1, 2), 0x4C);
+    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(2, 2), 0xCE);
 }
 
 enum OpCodes {
@@ -109,33 +186,70 @@ enum OpCodes {
     ClearScreen,
     // 1NNN
     // set PC to address NNN, "jump" to memory location
-    Jump,
+    Jump(Addr),
     // 6XNN
     // set register VX to value NN
-    SetRegister,
+    SetRegister(Addr, u16),
     // 7XNN
     // add value NN to VX
-    AddToRegister,
+    AddToRegister(Addr, u16),
     // ANNN
     // set index register I to address NNNN
-    SetIndexRegister,
+    SetIndexRegister(Addr),
     // DXYN (hardest)
     // draw an N pixel tall sprite starting at I
     // at Coordinates (VX, VY)
     // XOR pixels on screen using sprite data
     // if pixels on screen were switched OFF: VF set to 1
-    Display,
+    Display(Addr, Addr, u16),
+
+    Unimplemented,
+}
+
+impl OpCodes {
+    fn decode_raw(ins: u16) -> Self {
+        let raw = RawInstruction(ins);
+        if raw == 0x00E0 {
+            return Self::ClearScreen;
+        } else if raw.nth_m_digits(1, 1) == 0x1 {
+            return Self::Jump(raw.nth_m_digits(2, 3));
+        } else if raw.nth_m_digits(1, 1) == 0x6 {
+            return Self::SetRegister(raw.nth_m_digits(2, 1), raw.nth_m_digits(3, 2));
+        } else if raw.nth_m_digits(1, 1) == 0x7 {
+            return Self::AddToRegister(raw.nth_m_digits(2, 1), raw.nth_m_digits(3, 2));
+        } else if raw.nth_m_digits(1, 1) == 0xA {
+            return Self::SetIndexRegister(raw.nth_m_digits(2, 3));
+        } else if raw.nth_m_digits(1, 1) == 0xD {
+            return Self::Display(
+                raw.nth_m_digits(2, 1),
+                raw.nth_m_digits(3, 1),
+                raw.nth_m_digits(4, 1),
+            );
+        } else {
+            return Self::Unimplemented;
+        }
+    }
 }
 
 fn main() {
-    // main loop (700 CHIP-8 instructions per second)
-    // fetch:
-    //  read ins @ PC (2 bytes)
-    //  increment PC by 2 bytes
-    // decode
-    //  extract variables
-    // execute
-    //  run instruction
-
     // display::start_display();
+
+    const INS_PER_SECOND: u64 = 700;
+
+    let pc = ProgramCounter(0x0);
+    let index_register = IndexRegister(0x0);
+
+    // main loop (700 CHIP-8 instructions per second)
+    loop {
+        // fetch:
+        //  read ins @ PC (2 bytes)
+        //  increment PC by 2 bytes
+        // decode
+        //  extract variables
+        // execute
+        //  run instruction
+
+        // simulate OG hardware
+        thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
+    }
 }
