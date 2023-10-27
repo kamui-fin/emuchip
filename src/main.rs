@@ -205,7 +205,15 @@ impl Registers {
     }
 
     fn add_to_register(&mut self, reg_num: u8, value: u8) {
-        self.registers[reg_num as usize] += value;
+        let total = self.registers[reg_num as usize].checked_add(value);
+        if let Some(total) = total {
+            self.registers[reg_num as usize] = total;
+        } else {
+            // why last 8 bits?
+            self.registers[reg_num as usize] =
+                ((self.registers[reg_num as usize] as u16 + (value as u16)) & 0b11111111) as u8;
+            eprintln!("Adding {value} to V{reg_num} overflows!");
+        }
     }
 
     fn get(&self, reg_num: u8) -> u8 {
@@ -250,7 +258,7 @@ struct RawInstruction {
 
 impl RawInstruction {
     fn new(code: u16) -> Self {
-        RawInstruction { code, i: 0 }
+        RawInstruction { code, i: 1 }
     }
     // n is starting digit, m is length
     fn nth_m_digits(&self, n: u8, m: u8) -> u16 {
@@ -274,7 +282,7 @@ impl RawInstruction {
     // iterator like methods for decoding convenience
     // TODO: better error handling
     fn start_identifier(&mut self) -> u8 {
-        if self.i > 0 {
+        if self.i > 1 {
             panic!();
         }
         let id = self.nth_m_digits(self.i, 1);
@@ -284,8 +292,7 @@ impl RawInstruction {
     }
 
     fn next_register(&mut self) -> u8 {
-        if self.i > 2 {
-            // vx, vy don't show up past 3rd place
+        if self.i > 4 {
             panic!();
         }
         let reg = self.nth_m_digits(self.i, 1);
@@ -294,7 +301,7 @@ impl RawInstruction {
     }
 
     fn next_address(&mut self) -> u16 {
-        if self.i > 1 {
+        if self.i > 2 {
             panic!();
         }
         let reg = self.nth_m_digits(self.i, 3);
@@ -303,7 +310,7 @@ impl RawInstruction {
     }
 
     fn next_u8(&mut self) -> u8 {
-        if self.i > 2 {
+        if self.i > 3 {
             panic!();
         }
         let reg = self.nth_m_digits(self.i, 2);
@@ -312,7 +319,7 @@ impl RawInstruction {
     }
 
     fn next_u4(&mut self) -> u8 {
-        self.next_register() as u8
+        self.next_register()
     }
 }
 
@@ -431,6 +438,7 @@ impl OpCodes {
             0x0 => match ins {
                 0x00E0 => Self::ClearScreen,
                 0x00EE => Self::PopSubroutine,
+                _ => Self::Unimplemented,
             },
             0x1 => Self::Jump(raw.next_address()),
             0x2 => Self::PushSubroutine(raw.next_address()),
@@ -449,9 +457,10 @@ impl OpCodes {
                     0x3 => Self::XOr(x, y),
                     0x4 => Self::Add(x, y),
                     0x5 => Self::SubtractForward(x, y),
-                    0x6 => Self::SubtractBackward(x, y),
-                    0x7 => Self::LeftShift(x, y),
-                    0xE => Self::RightShift(x, y),
+                    0x6 => Self::RightShift(x, y),
+                    0x7 => Self::SubtractBackward(x, y),
+                    0xE => Self::LeftShift(x, y),
+                    _ => Self::Unimplemented,
                 }
             }
             0x9 => Self::SkipNotEqualRegister(raw.next_register(), raw.next_register()),
@@ -465,6 +474,7 @@ impl OpCodes {
                 match k_type {
                     0x9E => Self::SkipIfPressed(x),
                     0xA1 => Self::SkipIfNotPressed(x),
+                    _ => Self::Unimplemented,
                 }
             }
             0xF => {
@@ -480,6 +490,7 @@ impl OpCodes {
                     0x33 => Self::ToDecimal(x),
                     0x55 => Self::StoreRegisterToMemory(x),
                     0x65 => Self::LoadRegisterFromMemory(x),
+                    _ => Self::Unimplemented,
                 }
             }
             _ => Self::Unimplemented,
@@ -515,7 +526,8 @@ fn main() {
     let mut regs = Registers::new();
     let mut mem = Memory::new();
 
-    mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
+    // mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
+    mem.load_rom(include_bytes!("../roms/test_opcode.ch8"));
 
     let mut fb = FrameBuffer::new();
 
@@ -559,11 +571,11 @@ fn main() {
             OpCodes::Jump(addr) => {
                 mem.set_pc(addr);
             }
-            OpCodes::SetRegister(reg, val) => {
-                regs.set_register(reg, val);
+            OpCodes::SetRegister(vx, nn) => {
+                regs.set_register(vx, nn);
             }
-            OpCodes::AddToRegister(reg, val) => {
-                regs.add_to_register(reg, val);
+            OpCodes::AddToRegister(vx, nn) => {
+                regs.add_to_register(vx, nn);
             }
             OpCodes::SetIndexRegister(addr) => mem.set_index(addr),
             OpCodes::ClearScreen => {
@@ -574,7 +586,7 @@ fn main() {
                 // From I to I + N, plot I at VX, VY
                 // Simply XOR with existing fb data
                 let mut sprite: Vec<u8> = vec![];
-                for addr in mem.index.0..mem.index.0 + height {
+                for addr in mem.index.0..mem.index.0 + height as u16 {
                     let row = mem.get(addr); // 8 pixels wide because u8
                     sprite.push(row);
                 }
@@ -603,38 +615,54 @@ fn main() {
                 regs.set_register(vx, regs.get(vy) ^ regs.get(vx));
             }
             OpCodes::Add(vx, vy) => {
-                let sum = regs.get(vy) + regs.get(vx);
-                if sum > 255 {
-                    regs.set_register(0xf, 1);
-                } else {
+                let (x, y) = (regs.get(vy), regs.get(vx));
+                let z = x.checked_add(y);
+                if let Some(z) = z {
                     regs.set_register(0xf, 0);
+                    regs.set_register(vx, z);
+                } else {
+                    regs.set_register(0xf, 1);
+                    regs.set_register(vx, (((x as u16) + (y as u16)) & 0b11111111) as u8);
                 }
-                regs.set_register(vx, sum);
             }
             OpCodes::SubtractForward(vx, vy) => {
-                // todo: carry
-                regs.set_register(vx, regs.get(vx) - regs.get(vy));
+                let (x, y) = (regs.get(vx), regs.get(vy));
+                let z = x.checked_sub(y);
+                if let Some(z) = z {
+                    regs.set_register(0xf, 1); // no borrow
+                    regs.set_register(vx, z);
+                } else {
+                    regs.set_register(0xf, 0); // borrow
+                    regs.set_register(vx, x.wrapping_sub(y));
+                }
             }
             OpCodes::SubtractBackward(vx, vy) => {
-                // todo: carry
-                regs.set_register(vx, regs.get(vy) - regs.get(vx));
+                let (x, y) = (regs.get(vx), regs.get(vy));
+                let z = y.checked_sub(x);
+                if let Some(z) = z {
+                    regs.set_register(0xf, 1); // no borrow
+                    regs.set_register(vx, z);
+                } else {
+                    regs.set_register(0xf, 0); // borrow
+                    regs.set_register(vx, y.wrapping_sub(x));
+                }
             }
             OpCodes::LeftShift(vx, vy) => {
                 // optional copy
-                let vx_value = regs.get(vy);
+                let vx_value = regs.get(vx);
 
                 let vf = vx_value | (0b1 << 7);
-                let vx_value = vx << 1;
+                let vx_value = vx_value << 1;
 
                 regs.set_register(vx, vx_value);
                 regs.set_register(0xf, vf);
             }
             OpCodes::RightShift(vx, vy) => {
                 // optional copy
-                let vx_value = regs.get(vy);
+                let vx_value = regs.get(vx);
 
                 let vf = vx_value & 1;
-                let vx_value = vx >> 1;
+                let vx_value = vx_value >> 1;
 
                 regs.set_register(vx, vx_value);
                 regs.set_register(0xf, vf);
@@ -648,8 +676,12 @@ fn main() {
                 mem.set_pc(addr + regs.get(0) as u16);
             }
             OpCodes::AddToIndex(vx) => {
-                // TODO: set VF to 1 if I “overflows” from 0FFF to above 1000 (outside the normal addressing range)
+                // Most CHIP-8 interpreters' FX1E instructions do not affect VF
+                // with one exception: the CHIP-8 interpreter for the Commodore Amiga sets VF to 1 when there is a range overflow (I+VX>0xFFF)
+                // and to 0 when there is not.
+                // The only known game that depends on this behavior is Spacefight 2091!, while at least one game, Animal Race, depends on VF not being affected.
                 mem.set_index(mem.index.0 + regs.get(vx) as u16);
+                // TODO: optional amiga functionality support
             }
             OpCodes::SkipEqualConstant(vx, nn) => {
                 if regs.get(vx) == nn {
@@ -727,7 +759,7 @@ fn main() {
             OpCodes::StoreRegisterToMemory(vx) => {
                 for reg in 0..=vx {
                     let reg_val = regs.get(reg);
-                    mem.set(mem.pc.0 + reg as u16, reg_val);
+                    mem.set(mem.index.0 + reg as u16, reg_val);
                 }
             }
             OpCodes::Unimplemented => {}
@@ -739,3 +771,8 @@ fn main() {
         thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
     }
 }
+
+// BROKEN:
+// - 7XNN
+// - 8XY4
+// - 8XY5

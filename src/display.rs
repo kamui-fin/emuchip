@@ -42,7 +42,7 @@ impl FrameBuffer {
             .unwrap();
     }
 
-    fn from_u8_rgb(&self, r: u8, g: u8, b: u8) -> u32 {
+    fn from_u16_rgb(&self, r: u16, g: u16, b: u16) -> u32 {
         let (r, g, b) = (r as u32, g as u32, b as u32);
         (r << 16) | (g << 8) | b
     }
@@ -64,10 +64,10 @@ impl FrameBuffer {
 
                 match self.bit_buffer[index] {
                     0 => {
-                        self.pixel_buffer[index] = self.from_u8_rgb(0, 0, 0);
+                        self.pixel_buffer[index] = self.from_u16_rgb(0, 0, 0);
                     }
                     1 => {
-                        self.pixel_buffer[index] = self.from_u8_rgb(0, 127, 255);
+                        self.pixel_buffer[index] = self.from_u16_rgb(0, 127, 255);
                     }
                     _ => {}
                 }
