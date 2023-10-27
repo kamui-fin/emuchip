@@ -16,6 +16,10 @@
 
 use std::{fs, process, thread, time::Duration};
 
+use minifb::Key;
+
+use crate::display::FrameBuffer;
+
 mod display;
 
 type Addr = u16; // in reality u12
@@ -27,6 +31,9 @@ struct Memory {
     // font data stored from 050 -> 09F (000 -> 04F is empty by convention)
     bytes: [u8; 4096],
     pc: ProgramCounter,
+    index: IndexRegister,
+    stack: Stack,
+    font: Font,
 }
 
 impl Memory {
@@ -34,7 +41,14 @@ impl Memory {
         Self {
             bytes: [0; 4096],
             pc: ProgramCounter(0x09F, 0),
+            index: IndexRegister(0x0),
+            stack: Stack { addresses: vec![] },
+            font: Font::default(),
         }
+    }
+
+    fn get(&self, addr: Addr) -> u8 {
+        self.bytes[addr as usize]
     }
 
     fn next_instruction(&mut self) -> u16 {
@@ -47,6 +61,14 @@ impl Memory {
             process::exit(0);
         }
         ((l as u16) << 8) | r as u16
+    }
+
+    fn set_pc(&mut self, addr: Addr) {
+        self.pc.set_addr(addr);
+    }
+
+    fn set_index(&mut self, addr: Addr) {
+        self.index.set_addr(addr);
     }
 
     // loads program instructions starting at address 0x09F
@@ -151,10 +173,26 @@ enum Register {
     VF(),
 }
 
-#[derive(Debug)]
-struct VariableRegister {
-    label: u8, // in reality u4 (0 - F)
-    data: u8,
+struct Registers {
+    registers: [u8; 16],
+}
+
+impl Registers {
+    fn new() -> Self {
+        Self { registers: [0; 16] }
+    }
+
+    fn set_register(&mut self, reg_num: u8, value: u8) {
+        self.registers[reg_num as usize] = value;
+    }
+
+    fn add_to_register(&mut self, reg_num: u8, value: u8) {
+        self.registers[reg_num as usize] += value;
+    }
+
+    fn get(&self, reg_num: u8) -> u8 {
+        self.registers[reg_num as usize]
+    }
 }
 
 // Special registers
@@ -170,9 +208,19 @@ impl ProgramCounter {
     fn set_end(&mut self, len: usize) {
         self.1 = self.0 + (len as u16);
     }
+
+    fn set_addr(&mut self, addr: Addr) {
+        self.0 = addr;
+    }
 }
 
 struct IndexRegister(Addr);
+
+impl IndexRegister {
+    fn set_addr(&mut self, addr: Addr) {
+        self.0 = addr;
+    }
+}
 
 struct RawInstruction(u16);
 
@@ -212,6 +260,7 @@ fn test_bit_manip() {
     assert_eq!(RawInstruction(0x4CEE).nth_m_digits(2, 2), 0xCE);
 }
 
+#[derive(Debug)]
 enum OpCodes {
     // 00E0
     // turn all pixels to 0
@@ -221,10 +270,10 @@ enum OpCodes {
     Jump(Addr),
     // 6XNN
     // set register VX to value NN
-    SetRegister(Addr, u16),
+    SetRegister(u8, u8),
     // 7XNN
     // add value NN to VX
-    AddToRegister(Addr, u16),
+    AddToRegister(u8, u8),
     // ANNN
     // set index register I to address NNNN
     SetIndexRegister(Addr),
@@ -233,7 +282,7 @@ enum OpCodes {
     // at Coordinates (VX, VY)
     // XOR pixels on screen using sprite data
     // if pixels on screen were switched OFF: VF set to 1
-    Display(Addr, Addr, u16),
+    Display(u8, u8, u16),
 
     Unimplemented,
 }
@@ -242,42 +291,39 @@ impl OpCodes {
     fn decode_raw(ins: u16) -> Self {
         let raw = RawInstruction(ins);
         if raw == 0x00E0 {
-            return Self::ClearScreen;
+            Self::ClearScreen
         } else if raw.nth_m_digits(1, 1) == 0x1 {
-            return Self::Jump(raw.nth_m_digits(2, 3));
+            Self::Jump(raw.nth_m_digits(2, 3))
         } else if raw.nth_m_digits(1, 1) == 0x6 {
-            return Self::SetRegister(raw.nth_m_digits(2, 1), raw.nth_m_digits(3, 2));
+            Self::SetRegister(raw.nth_m_digits(2, 1) as u8, raw.nth_m_digits(3, 2) as u8)
         } else if raw.nth_m_digits(1, 1) == 0x7 {
-            return Self::AddToRegister(raw.nth_m_digits(2, 1), raw.nth_m_digits(3, 2));
+            Self::AddToRegister(raw.nth_m_digits(2, 1) as u8, raw.nth_m_digits(3, 2) as u8)
         } else if raw.nth_m_digits(1, 1) == 0xA {
-            return Self::SetIndexRegister(raw.nth_m_digits(2, 3));
+            Self::SetIndexRegister(raw.nth_m_digits(2, 3))
         } else if raw.nth_m_digits(1, 1) == 0xD {
-            return Self::Display(
-                raw.nth_m_digits(2, 1),
-                raw.nth_m_digits(3, 1),
+            Self::Display(
+                raw.nth_m_digits(2, 1) as u8,
+                raw.nth_m_digits(3, 1) as u8,
                 raw.nth_m_digits(4, 1),
-            );
+            )
         } else {
-            return Self::Unimplemented;
+            Self::Unimplemented
         }
     }
 }
 
 fn main() {
-    // display::start_display();
-
     const INS_PER_SECOND: u64 = 700;
 
+    let mut regs = Registers::new();
     let mut mem = Memory::new();
-    // let index_register = IndexRegister(0x0);
 
     mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
 
-    // main loop (700 CHIP-8 instructions per second)
-    loop {
-        let ins = mem.next_instruction();
-        println!("{:#06x}", ins);
+    let mut fb = FrameBuffer::new();
 
+    // main loop (700 CHIP-8 instructions per second)
+    while fb.window.is_open() && !fb.window.is_key_down(Key::Escape) {
         // fetch:
         //  read ins @ PC (2 bytes)
         //  increment PC by 2 bytes
@@ -285,6 +331,42 @@ fn main() {
         //  extract variables
         // execute
         //  run instruction
+        let ins = mem.next_instruction();
+        println!("Fetching {:#06x}", ins);
+        let ins = OpCodes::decode_raw(ins);
+        println!("Decoded to {:#?}", ins);
+
+        match ins {
+            OpCodes::Jump(addr) => {
+                mem.set_pc(addr);
+            }
+            OpCodes::SetRegister(reg, val) => {
+                regs.set_register(reg, val);
+            }
+            OpCodes::AddToRegister(reg, val) => {
+                regs.add_to_register(reg, val);
+            }
+            OpCodes::SetIndexRegister(addr) => mem.set_index(addr),
+            OpCodes::ClearScreen => {
+                fb.clear_buffer();
+            }
+            OpCodes::Display(reg_x, reg_y, height) => {
+                let (x, y) = (regs.get(reg_x), regs.get(reg_y));
+                // From I to I + N, plot I at VX, VY
+                // Simply XOR with existing fb data
+                let mut sprite: Vec<u8> = vec![];
+                for addr in mem.index.0..=mem.index.0 + height {
+                    let row = mem.get(addr); // 8 pixels wide because u8
+                    sprite.push(row);
+                }
+
+                let vf = fb.paint(x, y, sprite) as u8;
+                regs.set_register(0xF, vf);
+            }
+            OpCodes::Unimplemented => {}
+        }
+
+        fb.sync();
 
         // simulate OG hardware
         thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
