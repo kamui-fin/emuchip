@@ -14,9 +14,11 @@
 //      N: 4-bit constant
 //      X and Y: 4-bit register identifier
 
+// TODO: to run older games from the 1970s or 1980s, consider making a configurable option in your emulator to toggle between these behaviors.
+
 use std::{fs, process, thread, time::Duration};
 
-use minifb::Key;
+use minifb::{Key, KeyRepeat};
 use rand::{self, Rng};
 
 use crate::display::FrameBuffer;
@@ -49,6 +51,10 @@ impl Memory {
         }
     }
 
+    fn set(&mut self, addr: TypeAddr, val: u8) {
+        self.bytes[addr as usize] = val;
+    }
+
     fn get(&self, addr: TypeAddr) -> u8 {
         self.bytes[addr as usize]
     }
@@ -58,6 +64,13 @@ impl Memory {
         if !result {
             process::exit(0);
         }
+    }
+
+    fn decrement_pc(&mut self) {
+        if self.pc.0 == 0 {
+            return;
+        }
+        self.pc.decrement();
     }
 
     fn next_instruction(&mut self) -> u16 {
@@ -88,6 +101,11 @@ impl Memory {
         for i in start_index..start_index + bytes.len() {
             println!("{:03x?} = {:02x?}", i, self.bytes[i]);
         }
+
+        // load font
+        let start_index = 0x50;
+        self.bytes[start_index..start_index + self.font.data.len()]
+            .copy_from_slice(&self.font.data);
     }
 
     fn load_rom_by_file(&mut self, path: &str) {
@@ -156,6 +174,10 @@ impl Timer {
         Self { count: init_count }
     }
 
+    fn set(&mut self, value: u8) {
+        self.count = value;
+    }
+
     // Returns true if tick() sets to 0, else false
     fn tick(&mut self) -> bool {
         self.count -= 1;
@@ -193,6 +215,9 @@ impl ProgramCounter {
     fn increment(&mut self) -> bool {
         self.0 += 2;
         self.0 <= self.1
+    }
+    fn decrement(&mut self) {
+        self.0 -= 2;
     }
 
     fn set_end(&mut self, len: usize) {
@@ -274,26 +299,26 @@ enum OpCodes {
     // if pixels on screen were switched OFF: VF set to 1
     Display(u8, u8, u16),
 
-    PushSubroutine(TypeAddr), // ok
-    PopSubroutine,            // ok
+    PushSubroutine(TypeAddr),
+    PopSubroutine,
 
-    SkipEqualConstant(u8, u8),    // ok
-    SkipNotEqualConstant(u8, u8), // ok
-    SkipEqualRegister(u8, u8),    // ok
-    SkipNotEqualRegister(u8, u8), // ok
+    SkipEqualConstant(u8, u8),
+    SkipNotEqualConstant(u8, u8),
+    SkipEqualRegister(u8, u8),
+    SkipNotEqualRegister(u8, u8),
 
-    CopyRegister(u8, u8),     // ok
-    Or(u8, u8),               // ok
-    And(u8, u8),              // ok
-    XOr(u8, u8),              // ok
-    Add(u8, u8),              // ok
-    SubtractForward(u8, u8),  // ok
-    SubtractBackward(u8, u8), // ok
-    LeftShift(u8, u8),        // ok
-    RightShift(u8, u8),       // ok
+    CopyRegister(u8, u8),
+    Or(u8, u8),
+    And(u8, u8),
+    XOr(u8, u8),
+    Add(u8, u8),
+    SubtractForward(u8, u8),
+    SubtractBackward(u8, u8),
+    LeftShift(u8, u8),
+    RightShift(u8, u8),
 
-    JumpWithOffset(TypeAddr), // ok
-    Random(u8, u8),           // ok
+    JumpWithOffset(TypeAddr),
+    Random(u8, u8),
 
     SkipIfPressed(u8),
     SkipIfNotPressed(u8),
@@ -302,7 +327,7 @@ enum OpCodes {
     CopyRegisterToDelay(u8),
     CopyRegisterToSound(u8),
 
-    AddToIndex(u8), // ok
+    AddToIndex(u8),
     GetKey(u8),
     PointChar(u8),
     ToDecimal(u8),
@@ -338,6 +363,28 @@ impl OpCodes {
     }
 }
 
+fn key_to_u8(key: Key) -> Option<u8> {
+    match key {
+        Key::Key0 => Some(0),
+        Key::Key1 => Some(1),
+        Key::Key2 => Some(2),
+        Key::Key3 => Some(3),
+        Key::Key4 => Some(4),
+        Key::Key5 => Some(4),
+        Key::Key6 => Some(5),
+        Key::Key7 => Some(6),
+        Key::Key8 => Some(7),
+        Key::Key9 => Some(9),
+        Key::A => Some(0xA),
+        Key::B => Some(0xB),
+        Key::C => Some(0xC),
+        Key::D => Some(0xD),
+        Key::E => Some(0xE),
+        Key::F => Some(0xF),
+        _ => None,
+    }
+}
+
 fn main() {
     const INS_PER_SECOND: u64 = 700;
 
@@ -347,6 +394,28 @@ fn main() {
     mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
 
     let mut fb = FrameBuffer::new();
+
+    let mut delay_timer = Timer::new(0);
+    let mut sound_timer = Timer::new(0);
+
+    let keys = [
+        Key::Key0,
+        Key::Key1,
+        Key::Key2,
+        Key::Key3,
+        Key::Key4,
+        Key::Key5,
+        Key::Key6,
+        Key::Key7,
+        Key::Key8,
+        Key::Key9,
+        Key::A,
+        Key::B,
+        Key::C,
+        Key::D,
+        Key::E,
+        Key::F,
+    ];
 
     // main loop (700 CHIP-8 instructions per second)
     while fb.window.is_open() && !fb.window.is_key_down(Key::Escape) {
@@ -479,7 +548,63 @@ fn main() {
                 }
             }
             OpCodes::PointChar(vx) => {
-
+                let char = regs.get(vx);
+                let addr = 0x50 + char * 5;
+                mem.set_index(addr as u16);
+            }
+            OpCodes::ToDecimal(vx) => {
+                let mut in_decimal = regs.get(vx);
+                let mut digits = vec![];
+                while in_decimal != 0 {
+                    let left_digit = in_decimal % 10;
+                    digits.push(left_digit);
+                    in_decimal /= 10;
+                }
+                digits.reverse();
+                for (i, digit) in digits.iter().enumerate() {
+                    mem.set(mem.index.0 + i as u16, *(digit));
+                }
+            }
+            OpCodes::SkipIfPressed(vx) => {
+                // TODO: experiment w key repeat
+                if fb
+                    .window
+                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::No)
+                {
+                    mem.pc.increment();
+                }
+            }
+            OpCodes::SkipIfNotPressed(vx) => {
+                if !fb
+                    .window
+                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::No)
+                {
+                    mem.pc.increment();
+                }
+            }
+            OpCodes::CopyDelayToRegister(vx) => regs.set_register(vx, delay_timer.count),
+            OpCodes::CopyRegisterToDelay(vx) => delay_timer.set(regs.get(vx)),
+            OpCodes::CopyRegisterToSound(vx) => sound_timer.set(regs.get(vx)),
+            OpCodes::GetKey(vx) => {
+                // TODO: pressed and then released ? or just pressed. original implementation was former
+                let pressed = fb.window.get_keys();
+                if pressed.is_empty() {
+                    mem.decrement_pc();
+                } else if let Some(key) = key_to_u8(pressed[0]) {
+                    regs.set_register(vx, key);
+                }
+            }
+            OpCodes::LoadRegisterFromMemory(vx) => {
+                for reg in 0..=vx {
+                    let reg_val = mem.get(mem.index.0 + reg as u16);
+                    regs.set_register(reg, reg_val);
+                }
+            }
+            OpCodes::StoreRegisterToMemory(vx) => {
+                for reg in 0..=vx {
+                    let reg_val = regs.get(reg);
+                    mem.set(mem.pc.0 + reg as u16, reg_val);
+                }
             }
             OpCodes::Unimplemented => {}
         }
