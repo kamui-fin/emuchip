@@ -17,12 +17,14 @@
 use std::{fs, process, thread, time::Duration};
 
 use minifb::Key;
+use rand::{self, Rng};
 
 use crate::display::FrameBuffer;
 
 mod display;
 
-type Addr = u16; // in reality u12
+type TypeAddr = u16; // in reality u12
+type TypeRegister = u8; // size of value contained in register AND register label itself
 
 /* Low level emulation mappers */
 
@@ -47,8 +49,15 @@ impl Memory {
         }
     }
 
-    fn get(&self, addr: Addr) -> u8 {
+    fn get(&self, addr: TypeAddr) -> u8 {
         self.bytes[addr as usize]
+    }
+
+    fn increment_pc(&mut self) {
+        let result = self.pc.increment();
+        if !result {
+            process::exit(0);
+        }
     }
 
     fn next_instruction(&mut self) -> u16 {
@@ -56,18 +65,15 @@ impl Memory {
             self.bytes[self.pc.0 as usize],
             self.bytes[(self.pc.0 + 1) as usize],
         );
-        let result = self.pc.increment();
-        if !result {
-            process::exit(0);
-        }
+        self.increment_pc();
         ((l as u16) << 8) | r as u16
     }
 
-    fn set_pc(&mut self, addr: Addr) {
+    fn set_pc(&mut self, addr: TypeAddr) {
         self.pc.set_addr(addr);
     }
 
-    fn set_index(&mut self, addr: Addr) {
+    fn set_index(&mut self, addr: TypeAddr) {
         self.index.set_addr(addr);
     }
 
@@ -91,7 +97,7 @@ impl Memory {
 }
 
 struct Stack {
-    addresses: Vec<Addr>,
+    addresses: Vec<TypeAddr>,
 }
 
 impl Stack {
@@ -99,11 +105,11 @@ impl Stack {
         Self { addresses: vec![] }
     }
 
-    fn push(&mut self, addr: Addr) {
+    fn push(&mut self, addr: TypeAddr) {
         self.addresses.push(addr)
     }
 
-    fn pop(&mut self) -> Option<Addr> {
+    fn pop(&mut self) -> Option<TypeAddr> {
         self.addresses.pop()
     }
 }
@@ -181,7 +187,7 @@ impl Registers {
 
 // Special registers
 #[derive(Debug)]
-struct ProgramCounter(Addr, Addr);
+struct ProgramCounter(TypeAddr, TypeAddr);
 
 impl ProgramCounter {
     fn increment(&mut self) -> bool {
@@ -193,15 +199,15 @@ impl ProgramCounter {
         self.1 = self.0 + (len as u16);
     }
 
-    fn set_addr(&mut self, addr: Addr) {
+    fn set_addr(&mut self, addr: TypeAddr) {
         self.0 = addr;
     }
 }
 
-struct IndexRegister(Addr);
+struct IndexRegister(TypeAddr);
 
 impl IndexRegister {
-    fn set_addr(&mut self, addr: Addr) {
+    fn set_addr(&mut self, addr: TypeAddr) {
         self.0 = addr;
     }
 }
@@ -251,7 +257,7 @@ enum OpCodes {
     ClearScreen,
     // 1NNN
     // set PC to address NNN, "jump" to memory location
-    Jump(Addr),
+    Jump(TypeAddr),
     // 6XNN
     // set register VX to value NN
     SetRegister(u8, u8),
@@ -260,13 +266,49 @@ enum OpCodes {
     AddToRegister(u8, u8),
     // ANNN
     // set index register I to address NNNN
-    SetIndexRegister(Addr),
+    SetIndexRegister(TypeAddr),
     // DXYN (hardest)
     // draw an N pixel tall sprite starting at I
     // at Coordinates (VX, VY)
     // XOR pixels on screen using sprite data
     // if pixels on screen were switched OFF: VF set to 1
     Display(u8, u8, u16),
+
+    PushSubroutine(TypeAddr), // ok
+    PopSubroutine,            // ok
+
+    SkipEqualConstant(u8, u8),    // ok
+    SkipNotEqualConstant(u8, u8), // ok
+    SkipEqualRegister(u8, u8),    // ok
+    SkipNotEqualRegister(u8, u8), // ok
+
+    CopyRegister(u8, u8),     // ok
+    Or(u8, u8),               // ok
+    And(u8, u8),              // ok
+    XOr(u8, u8),              // ok
+    Add(u8, u8),              // ok
+    SubtractForward(u8, u8),  // ok
+    SubtractBackward(u8, u8), // ok
+    LeftShift(u8, u8),        // ok
+    RightShift(u8, u8),       // ok
+
+    JumpWithOffset(TypeAddr), // ok
+    Random(u8, u8),           // ok
+
+    SkipIfPressed(u8),
+    SkipIfNotPressed(u8),
+
+    CopyDelayToRegister(u8),
+    CopyRegisterToDelay(u8),
+    CopyRegisterToSound(u8),
+
+    AddToIndex(u8), // ok
+    GetKey(u8),
+    PointChar(u8),
+    ToDecimal(u8),
+
+    LoadRegisterFromMemory(u8),
+    StoreRegisterToMemory(u8),
 
     Unimplemented,
 }
@@ -346,6 +388,98 @@ fn main() {
 
                 let vf = fb.paint(x, y, sprite) as u8;
                 regs.set_register(0xF, vf);
+            }
+            OpCodes::PushSubroutine(addr) => {
+                mem.stack.push(mem.pc.0); // store current instruction to return back
+                mem.set_pc(addr);
+            }
+            OpCodes::PopSubroutine => {
+                let addr = mem.stack.pop().unwrap();
+                mem.set_pc(addr);
+            }
+            OpCodes::CopyRegister(vx, vy) => {
+                regs.set_register(vx, regs.get(vy));
+            }
+            OpCodes::Or(vx, vy) => {
+                regs.set_register(vx, regs.get(vy) | regs.get(vx));
+            }
+            OpCodes::And(vx, vy) => {
+                regs.set_register(vx, regs.get(vy) & regs.get(vx));
+            }
+            OpCodes::XOr(vx, vy) => {
+                regs.set_register(vx, regs.get(vy) ^ regs.get(vx));
+            }
+            OpCodes::Add(vx, vy) => {
+                let sum = regs.get(vy) + regs.get(vx);
+                if sum > 255 {
+                    regs.set_register(0xf, 1);
+                } else {
+                    regs.set_register(0xf, 0);
+                }
+                regs.set_register(vx, sum);
+            }
+            OpCodes::SubtractForward(vx, vy) => {
+                // todo: carry
+                regs.set_register(vx, regs.get(vx) - regs.get(vy));
+            }
+            OpCodes::SubtractBackward(vx, vy) => {
+                // todo: carry
+                regs.set_register(vx, regs.get(vy) - regs.get(vx));
+            }
+            OpCodes::LeftShift(vx, vy) => {
+                // optional copy
+                let vx_value = regs.get(vy);
+
+                let vf = vx_value | (0b1 << 7);
+                let vx_value = vx << 1;
+
+                regs.set_register(vx, vx_value);
+                regs.set_register(0xf, vf);
+            }
+            OpCodes::RightShift(vx, vy) => {
+                // optional copy
+                let vx_value = regs.get(vy);
+
+                let vf = vx_value & 1;
+                let vx_value = vx >> 1;
+
+                regs.set_register(vx, vx_value);
+                regs.set_register(0xf, vf);
+            }
+            OpCodes::Random(vx, nn) => {
+                let mut rng = rand::thread_rng();
+                let ransuu = rng.gen_range(0..=nn);
+                regs.set_register(vx, nn & ransuu);
+            }
+            OpCodes::JumpWithOffset(addr) => {
+                mem.set_pc(addr + regs.get(0) as u16);
+            }
+            OpCodes::AddToIndex(vx) => {
+                // TODO: set VF to 1 if I “overflows” from 0FFF to above 1000 (outside the normal addressing range)
+                mem.set_index(mem.index.0 + regs.get(vx) as u16);
+            }
+            OpCodes::SkipEqualConstant(vx, nn) => {
+                if regs.get(vx) == nn {
+                    mem.increment_pc();
+                }
+            }
+            OpCodes::SkipNotEqualConstant(vx, nn) => {
+                if regs.get(vx) != nn {
+                    mem.increment_pc();
+                }
+            }
+            OpCodes::SkipEqualRegister(vx, vy) => {
+                if regs.get(vx) == regs.get(vy) {
+                    mem.increment_pc();
+                }
+            }
+            OpCodes::SkipNotEqualRegister(vx, vy) => {
+                if regs.get(vx) != regs.get(vy) {
+                    mem.increment_pc();
+                }
+            }
+            OpCodes::PointChar(vx) => {
+
             }
             OpCodes::Unimplemented => {}
         }
