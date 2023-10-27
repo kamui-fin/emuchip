@@ -16,7 +16,13 @@
 
 // TODO: to run older games from the 1970s or 1980s, consider making a configurable option in your emulator to toggle between these behaviors.
 
-use std::{fs, process, thread, time::Duration};
+// TODO: fix unsigned integer sizes inconsistency
+
+use std::{
+    fs, process,
+    thread::{self, panicking},
+    time::Duration,
+};
 
 use minifb::{Key, KeyRepeat};
 use rand::{self, Rng};
@@ -266,46 +272,47 @@ impl RawInstruction {
     }
 
     // iterator like methods for decoding convenience
-    fn start_identifier(&mut self) -> Option<u16> {
+    // TODO: better error handling
+    fn start_identifier(&mut self) -> u8 {
         if self.i > 0 {
-            return None;
+            panic!();
         }
         let id = self.nth_m_digits(self.i, 1);
         self.i += 1;
 
-        Some(id)
+        id as u8
     }
 
-    fn next_register(&mut self) -> Option<u16> {
+    fn next_register(&mut self) -> u8 {
         if self.i > 2 {
             // vx, vy don't show up past 3rd place
-            return None;
+            panic!();
         }
         let reg = self.nth_m_digits(self.i, 1);
         self.i += 1;
-        Some(reg)
+        reg as u8
     }
 
-    fn next_address(&mut self) -> Option<u16> {
+    fn next_address(&mut self) -> u16 {
         if self.i > 1 {
-            return None;
+            panic!();
         }
         let reg = self.nth_m_digits(self.i, 3);
         self.i += 3;
-        Some(reg)
+        reg
     }
 
-    fn next_u8(&mut self) -> Option<u16> {
+    fn next_u8(&mut self) -> u8 {
         if self.i > 2 {
-            return None;
+            panic!();
         }
         let reg = self.nth_m_digits(self.i, 2);
         self.i += 2;
-        Some(reg)
+        reg as u8
     }
 
-    fn next_u4(&mut self) -> Option<u16> {
-        self.next_register()
+    fn next_u4(&mut self) -> u8 {
+        self.next_register() as u8
     }
 }
 
@@ -347,7 +354,7 @@ enum OpCodes {
     // at Coordinates (VX, VY)
     // XOR pixels on screen using sprite data
     // if pixels on screen were switched OFF: VF set to 1
-    Display(u8, u8, u16),
+    Display(u8, u8, u8),
 
     // 2NNN
     PushSubroutine(TypeAddr),
@@ -418,45 +425,64 @@ enum OpCodes {
 
 impl OpCodes {
     fn decode_raw(ins: u16) -> Self {
-        let raw = RawInstruction::new(ins);
+        let mut raw = RawInstruction::new(ins);
 
         match raw.start_identifier() {
-            0x0 => {}
-            0x1 => {}
-            0x2 => {}
-            0x3 => {}
-            0x4 => {}
-            0x5 => {}
-            0x6 => {}
-            0x7 => {}
-            0x8 => {}
-            0x9 => {}
-            0xA => {}
-            0xB => {}
-            0xC => {}
-            0xD => {}
-            0xE => {}
-            0xF => {}
-        }
-
-        if raw == 0x00E0 {
-            Self::ClearScreen
-        } else if raw.nth_m_digits(1, 1) == 0x1 {
-            Self::Jump(raw.nth_m_digits(2, 3))
-        } else if raw.nth_m_digits(1, 1) == 0x6 {
-            Self::SetRegister(raw.nth_m_digits(2, 1) as u8, raw.nth_m_digits(3, 2) as u8)
-        } else if raw.nth_m_digits(1, 1) == 0x7 {
-            Self::AddToRegister(raw.nth_m_digits(2, 1) as u8, raw.nth_m_digits(3, 2) as u8)
-        } else if raw.nth_m_digits(1, 1) == 0xA {
-            Self::SetIndexRegister(raw.nth_m_digits(2, 3))
-        } else if raw.nth_m_digits(1, 1) == 0xD {
-            Self::Display(
-                raw.nth_m_digits(2, 1) as u8,
-                raw.nth_m_digits(3, 1) as u8,
-                raw.nth_m_digits(4, 1),
-            )
-        } else {
-            Self::Unimplemented
+            0x0 => match ins {
+                0x00E0 => Self::ClearScreen,
+                0x00EE => Self::PopSubroutine,
+            },
+            0x1 => Self::Jump(raw.next_address()),
+            0x2 => Self::PushSubroutine(raw.next_address()),
+            0x3 => Self::SkipEqualConstant(raw.next_register(), raw.next_u8()),
+            0x4 => Self::SkipNotEqualConstant(raw.next_register(), raw.next_u8()),
+            0x5 => Self::SkipEqualRegister(raw.next_register(), raw.next_register()),
+            0x6 => Self::SetRegister(raw.next_register(), raw.next_u8()),
+            0x7 => Self::AddToRegister(raw.next_register(), raw.next_u8()),
+            0x8 => {
+                let (x, y) = (raw.next_register(), raw.next_register());
+                let alu_type = raw.next_u4();
+                match alu_type {
+                    0x0 => Self::CopyRegister(x, y),
+                    0x1 => Self::Or(x, y),
+                    0x2 => Self::And(x, y),
+                    0x3 => Self::XOr(x, y),
+                    0x4 => Self::Add(x, y),
+                    0x5 => Self::SubtractForward(x, y),
+                    0x6 => Self::SubtractBackward(x, y),
+                    0x7 => Self::LeftShift(x, y),
+                    0xE => Self::RightShift(x, y),
+                }
+            }
+            0x9 => Self::SkipNotEqualRegister(raw.next_register(), raw.next_register()),
+            0xA => Self::SetIndexRegister(raw.next_address()),
+            0xB => Self::JumpWithOffset(raw.next_address()),
+            0xC => Self::Random(raw.next_register(), raw.next_u8()),
+            0xD => Self::Display(raw.next_register(), raw.next_register(), raw.next_u4()),
+            0xE => {
+                let x = raw.next_register();
+                let k_type = raw.next_u8();
+                match k_type {
+                    0x9E => Self::SkipIfPressed(x),
+                    0xA1 => Self::SkipIfNotPressed(x),
+                }
+            }
+            0xF => {
+                let x = raw.next_register();
+                let f_type = raw.next_u8();
+                match f_type {
+                    0x07 => Self::CopyDelayToRegister(x),
+                    0x0A => Self::GetKey(x),
+                    0x15 => Self::CopyRegisterToDelay(x),
+                    0x18 => Self::CopyRegisterToSound(x),
+                    0x1E => Self::AddToIndex(x),
+                    0x29 => Self::PointChar(x),
+                    0x33 => Self::ToDecimal(x),
+                    0x55 => Self::StoreRegisterToMemory(x),
+                    0x65 => Self::LoadRegisterFromMemory(x),
+                }
+            }
+            _ => Self::Unimplemented,
         }
     }
 }
