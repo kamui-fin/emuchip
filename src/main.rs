@@ -339,7 +339,7 @@ fn main() {
                 // From I to I + N, plot I at VX, VY
                 // Simply XOR with existing fb data
                 let mut sprite: Vec<u8> = vec![];
-                for addr in mem.index.0..=mem.index.0 + height {
+                for addr in mem.index.0..mem.index.0 + height {
                     let row = mem.get(addr); // 8 pixels wide because u8
                     sprite.push(row);
                 }

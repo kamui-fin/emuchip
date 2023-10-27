@@ -12,7 +12,7 @@ pub struct FrameBuffer {
 impl FrameBuffer {
     pub fn new() -> Self {
         let mut window = Window::new(
-            "Test - ESC to exit",
+            "emuchip - ESC to exit",
             WIDTH,
             HEIGHT,
             WindowOptions {
@@ -48,13 +48,14 @@ impl FrameBuffer {
     }
 
     pub fn paint(&mut self, x: u8, y: u8, sprite: Vec<u8>) -> bool {
-        // println!("Painting sprite at ({x}, {y}): {sprite:?}");
+        println!("Painting sprite at ({x}, {y}): {sprite:?}");
         let mut vf = false;
         for (i, row) in sprite.iter().enumerate() {
             for j in 0..8 {
-                let (nx, ny) = ((x - 1) + j, (y - 1) as usize + i);
-                let index = (nx as usize * HEIGHT) + ny;
-                let bit = (row >> j) & 1;
+                // possible bug with mapping
+                let (nx, ny) = ((x - 1) as usize + j, (y - 1) as usize + i);
+                let index = (ny * WIDTH) + nx;
+                let bit = (row >> (7 - j)) & 1;
                 let previous = self.bit_buffer[index];
                 self.bit_buffer[index] ^= bit as u32;
                 if previous != self.bit_buffer[index] && self.bit_buffer[index] == 0 {
