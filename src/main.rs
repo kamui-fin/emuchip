@@ -14,7 +14,7 @@
 //      N: 4-bit constant
 //      X and Y: 4-bit register identifier
 
-use std::{fs, thread, time::Duration};
+use std::{fs, process, thread, time::Duration};
 
 mod display;
 
@@ -26,22 +26,41 @@ struct Memory {
     // 4k bytes
     // font data stored from 050 -> 09F (000 -> 04F is empty by convention)
     bytes: [u8; 4096],
+    pc: ProgramCounter,
 }
 
 impl Memory {
     fn new() -> Self {
-        Self { bytes: [0; 4096] }
+        Self {
+            bytes: [0; 4096],
+            pc: ProgramCounter(0x09F, 0),
+        }
+    }
+
+    fn next_instruction(&mut self) -> u16 {
+        let (l, r) = (
+            self.bytes[self.pc.0 as usize],
+            self.bytes[(self.pc.0 + 1) as usize],
+        );
+        let result = self.pc.increment();
+        if !result {
+            process::exit(0);
+        }
+        ((l as u16) << 8) | r as u16
     }
 
     // loads program instructions starting at address 0x09F
-    fn load_rom(&mut self, path: &str) {
-        let program = fs::read(path);
-        let program = program.unwrap();
-
+    fn load_rom(&mut self, bytes: &[u8]) {
+        self.pc.set_end(bytes.len());
         let start_index = 0x09F;
-        if start_index + program.len() <= 4096 {
-            self.bytes[start_index..start_index + program.len()].copy_from_slice(&program);
+        if start_index + bytes.len() <= 4096 {
+            self.bytes[start_index..start_index + bytes.len()].copy_from_slice(bytes);
         }
+    }
+
+    fn load_rom_by_file(&mut self, path: &str) {
+        let program = fs::read(path).unwrap();
+        self.load_rom(program.as_slice());
     }
 }
 
@@ -132,13 +151,26 @@ enum Register {
     VF(),
 }
 
+#[derive(Debug)]
 struct VariableRegister {
     label: u8, // in reality u4 (0 - F)
     data: u8,
 }
 
 // Special registers
-struct ProgramCounter(Addr);
+#[derive(Debug)]
+struct ProgramCounter(Addr, Addr);
+
+impl ProgramCounter {
+    fn increment(&mut self) -> bool {
+        self.0 += 2;
+        self.0 <= self.1
+    }
+
+    fn set_end(&mut self, len: usize) {
+        self.1 = self.0 + (len as u16);
+    }
+}
 
 struct IndexRegister(Addr);
 
@@ -166,7 +198,7 @@ impl RawInstruction {
 
 impl PartialEq<u16> for RawInstruction {
     fn eq(&self, ins: &u16) -> bool {
-        self.0 == ins
+        ins.eq(&self.0)
     }
 }
 
@@ -236,11 +268,16 @@ fn main() {
 
     const INS_PER_SECOND: u64 = 700;
 
-    let pc = ProgramCounter(0x0);
-    let index_register = IndexRegister(0x0);
+    let mut mem = Memory::new();
+    // let index_register = IndexRegister(0x0);
+
+    mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
 
     // main loop (700 CHIP-8 instructions per second)
     loop {
+        let ins = mem.next_instruction();
+        println!("{:#06x}", ins);
+
         // fetch:
         //  read ins @ PC (2 bytes)
         //  increment PC by 2 bytes
