@@ -32,15 +32,15 @@ struct Memory {
     bytes: [u8; 4096],
     pc: ProgramCounter,
     index: IndexRegister,
-    stack: Stack,
     font: Font,
+    stack: Stack,
 }
 
 impl Memory {
     fn new() -> Self {
         Self {
             bytes: [0; 4096],
-            pc: ProgramCounter(0x09F, 0),
+            pc: ProgramCounter(0x200, 0),
             index: IndexRegister(0x0),
             stack: Stack { addresses: vec![] },
             font: Font::default(),
@@ -74,9 +74,13 @@ impl Memory {
     // loads program instructions starting at address 0x09F
     fn load_rom(&mut self, bytes: &[u8]) {
         self.pc.set_end(bytes.len());
-        let start_index = 0x09F;
+        let start_index = 0x200;
         if start_index + bytes.len() <= 4096 {
             self.bytes[start_index..start_index + bytes.len()].copy_from_slice(bytes);
+        }
+
+        for i in start_index..start_index + bytes.len() {
+            println!("{:03x?} = {:02x?}", i, self.bytes[i]);
         }
     }
 
@@ -151,26 +155,6 @@ impl Timer {
         self.count -= 1;
         self.count == 0
     }
-}
-
-enum Register {
-    // General purpose variable registers from 0 - F
-    V0(),
-    V1(),
-    V2(),
-    V3(),
-    V4(),
-    V5(),
-    V6(),
-    V7(),
-    V8(),
-    V9(),
-    VA(),
-    VB(),
-    VC(),
-    VD(),
-    VE(),
-    VF(),
 }
 
 struct Registers {

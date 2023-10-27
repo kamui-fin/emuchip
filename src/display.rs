@@ -1,49 +1,74 @@
-use minifb::{Window, WindowOptions};
+use minifb::{Scale, Window, WindowOptions};
 
 const WIDTH: usize = 64;
 const HEIGHT: usize = 32;
 
 pub struct FrameBuffer {
-    buffer: Vec<u32>,
+    bit_buffer: Vec<u32>,
+    pixel_buffer: Vec<u32>,
     pub window: Window,
 }
 
 impl FrameBuffer {
     pub fn new() -> Self {
-        let buffer = vec![0; WIDTH * HEIGHT];
         let mut window = Window::new(
             "Test - ESC to exit",
             WIDTH,
             HEIGHT,
-            WindowOptions::default(),
+            WindowOptions {
+                scale: Scale::X16,
+                ..WindowOptions::default()
+            },
         )
         .unwrap();
+        window.set_position(500, 300);
         // Limit to max ~60 fps update rate
         window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
-        Self { buffer, window }
+        Self {
+            bit_buffer: vec![0; WIDTH * HEIGHT],
+            pixel_buffer: vec![0; WIDTH * HEIGHT],
+            window,
+        }
     }
 
     pub fn clear_buffer(&mut self) {
-        self.buffer = vec![0; WIDTH * HEIGHT]
+        self.bit_buffer = vec![0; WIDTH * HEIGHT];
+        self.pixel_buffer = vec![0; WIDTH * HEIGHT]
     }
 
     pub fn sync(&mut self) {
         self.window
-            .update_with_buffer(&self.buffer, WIDTH, HEIGHT)
+            .update_with_buffer(&self.pixel_buffer, WIDTH, HEIGHT)
             .unwrap();
     }
 
+    fn from_u8_rgb(&self, r: u8, g: u8, b: u8) -> u32 {
+        let (r, g, b) = (r as u32, g as u32, b as u32);
+        (r << 16) | (g << 8) | b
+    }
+
     pub fn paint(&mut self, x: u8, y: u8, sprite: Vec<u8>) -> bool {
+        // println!("Painting sprite at ({x}, {y}): {sprite:?}");
         let mut vf = false;
         for (i, row) in sprite.iter().enumerate() {
             for j in 0..8 {
-                let (nx, ny) = (x + j, y as usize + i);
+                let (nx, ny) = ((x - 1) + j, (y - 1) as usize + i);
+                let index = (nx as usize * HEIGHT) + ny;
                 let bit = (row >> j) & 1;
-                let index = (nx as usize * WIDTH) + (ny * HEIGHT);
-                let previous = self.buffer[index];
-                self.buffer[index] ^= bit as u32;
-                if previous != self.buffer[index] && self.buffer[index] == 0 {
+                let previous = self.bit_buffer[index];
+                self.bit_buffer[index] ^= bit as u32;
+                if previous != self.bit_buffer[index] && self.bit_buffer[index] == 0 {
                     vf = true;
+                }
+
+                match self.bit_buffer[index] {
+                    0 => {
+                        self.pixel_buffer[index] = self.from_u8_rgb(0, 0, 0);
+                    }
+                    1 => {
+                        self.pixel_buffer[index] = self.from_u8_rgb(0, 127, 255);
+                    }
+                    _ => {}
                 }
             }
         }
