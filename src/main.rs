@@ -237,9 +237,16 @@ impl IndexRegister {
     }
 }
 
-struct RawInstruction(u16);
+struct RawInstruction {
+    code: u16,
+    i: u8,
+}
 
 impl RawInstruction {
+    fn new(code: u16) -> Self {
+        RawInstruction { code, i: 0 }
+    }
+    // n is starting digit, m is length
     fn nth_m_digits(&self, n: u8, m: u8) -> u16 {
         // 0110 1100 1111 0001
         // -------------------
@@ -255,24 +262,67 @@ impl RawInstruction {
         for _ in 0..m {
             mask = (mask << 4) | 0b1111;
         }
-        (self.0 & (mask << shift_places)) >> shift_places
+        (self.code & (mask << shift_places)) >> shift_places
+    }
+
+    // iterator like methods for decoding convenience
+    fn start_identifier(&mut self) -> Option<u16> {
+        if self.i > 0 {
+            return None;
+        }
+        let id = self.nth_m_digits(self.i, 1);
+        self.i += 1;
+
+        Some(id)
+    }
+
+    fn next_register(&mut self) -> Option<u16> {
+        if self.i > 2 {
+            // vx, vy don't show up past 3rd place
+            return None;
+        }
+        let reg = self.nth_m_digits(self.i, 1);
+        self.i += 1;
+        Some(reg)
+    }
+
+    fn next_address(&mut self) -> Option<u16> {
+        if self.i > 1 {
+            return None;
+        }
+        let reg = self.nth_m_digits(self.i, 3);
+        self.i += 3;
+        Some(reg)
+    }
+
+    fn next_u8(&mut self) -> Option<u16> {
+        if self.i > 2 {
+            return None;
+        }
+        let reg = self.nth_m_digits(self.i, 2);
+        self.i += 2;
+        Some(reg)
+    }
+
+    fn next_u4(&mut self) -> Option<u16> {
+        self.next_register()
     }
 }
 
 impl PartialEq<u16> for RawInstruction {
     fn eq(&self, ins: &u16) -> bool {
-        ins.eq(&self.0)
+        ins.eq(&self.code)
     }
 }
 
 #[test]
 fn test_bit_manip() {
-    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(2, 1), 0xC);
-    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(3, 1), 0xE);
-    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(1, 1), 0x4);
+    assert_eq!(RawInstruction::new(0x4CEE).nth_m_digits(2, 1), 0xC);
+    assert_eq!(RawInstruction::new(0x4CEE).nth_m_digits(3, 1), 0xE);
+    assert_eq!(RawInstruction::new(0x4CEE).nth_m_digits(1, 1), 0x4);
 
-    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(1, 2), 0x4C);
-    assert_eq!(RawInstruction(0x4CEE).nth_m_digits(2, 2), 0xCE);
+    assert_eq!(RawInstruction::new(0x4CEE).nth_m_digits(1, 2), 0x4C);
+    assert_eq!(RawInstruction::new(0x4CEE).nth_m_digits(2, 2), 0xCE);
 }
 
 #[derive(Debug)]
@@ -299,40 +349,68 @@ enum OpCodes {
     // if pixels on screen were switched OFF: VF set to 1
     Display(u8, u8, u16),
 
+    // 2NNN
     PushSubroutine(TypeAddr),
+    // 00EE
     PopSubroutine,
 
+    // 3XNN
     SkipEqualConstant(u8, u8),
+    // 4XNN
     SkipNotEqualConstant(u8, u8),
+    // 5XY0
     SkipEqualRegister(u8, u8),
+    // 9XY0
     SkipNotEqualRegister(u8, u8),
 
+    // 8XY0
     CopyRegister(u8, u8),
+    // 8XY1
     Or(u8, u8),
+    // 8XY2
     And(u8, u8),
+    // 8XY3
     XOr(u8, u8),
+    /// 8XY4
     Add(u8, u8),
+    // 8XY5
     SubtractForward(u8, u8),
+    // 8XY7
     SubtractBackward(u8, u8),
+    // 8XYE
     LeftShift(u8, u8),
+    // 8XY6
     RightShift(u8, u8),
 
+    // BNNN
     JumpWithOffset(TypeAddr),
+    // CXNN
     Random(u8, u8),
 
+    // EX9E
     SkipIfPressed(u8),
+    // EXA1
     SkipIfNotPressed(u8),
 
+    // FX07
     CopyDelayToRegister(u8),
+    // FX15
     CopyRegisterToDelay(u8),
+    // FX18
     CopyRegisterToSound(u8),
 
+    // FX1E
     AddToIndex(u8),
+    // FX0A
     GetKey(u8),
+    // FX29
     PointChar(u8),
+    // FX33
     ToDecimal(u8),
 
+    // FX65
     LoadRegisterFromMemory(u8),
+    // FX55
     StoreRegisterToMemory(u8),
 
     Unimplemented,
@@ -340,7 +418,27 @@ enum OpCodes {
 
 impl OpCodes {
     fn decode_raw(ins: u16) -> Self {
-        let raw = RawInstruction(ins);
+        let raw = RawInstruction::new(ins);
+
+        match raw.start_identifier() {
+            0x0 => {}
+            0x1 => {}
+            0x2 => {}
+            0x3 => {}
+            0x4 => {}
+            0x5 => {}
+            0x6 => {}
+            0x7 => {}
+            0x8 => {}
+            0x9 => {}
+            0xA => {}
+            0xB => {}
+            0xC => {}
+            0xD => {}
+            0xE => {}
+            0xF => {}
+        }
+
         if raw == 0x00E0 {
             Self::ClearScreen
         } else if raw.nth_m_digits(1, 1) == 0x1 {
