@@ -19,9 +19,9 @@
 // TODO: fix unsigned integer sizes inconsistency
 
 use std::{
-    fs, process,
+    cmp, fs, process,
     thread::{self, panicking},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use minifb::{Key, KeyRepeat};
@@ -104,9 +104,9 @@ impl Memory {
             self.bytes[start_index..start_index + bytes.len()].copy_from_slice(bytes);
         }
 
-        for i in start_index..start_index + bytes.len() {
+        /* for i in start_index..start_index + bytes.len() {
             println!("{:03x?} = {:02x?}", i, self.bytes[i]);
-        }
+        } */
 
         // load font
         let start_index = 0x50;
@@ -184,10 +184,25 @@ impl Timer {
         self.count = value;
     }
 
-    // Returns true if tick() sets to 0, else false
-    fn tick(&mut self) -> bool {
-        self.count -= 1;
-        self.count == 0
+    fn sync(&mut self, last_updated: Instant) -> bool {
+        if self.count == 0 {
+            return false;
+        }
+        let elapsed_ms = last_updated.elapsed().as_millis();
+        if elapsed_ms > 1_000 / 60 {
+            let temp = self.count;
+
+            let num_ticks = elapsed_ms / (1_000 / 60);
+            if (self.count as u128) < num_ticks {
+                self.count = 0;
+            } else {
+                self.count -= num_ticks as u8;
+            }
+            println!("{} -> {}", temp, self.count);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -212,7 +227,6 @@ impl Registers {
             // why last 8 bits?
             self.registers[reg_num as usize] =
                 ((self.registers[reg_num as usize] as u16 + (value as u16)) & 0b11111111) as u8;
-            eprintln!("Adding {value} to V{reg_num} overflows!");
         }
     }
 
@@ -521,13 +535,16 @@ fn key_to_u8(key: Key) -> Option<u8> {
 }
 
 fn main() {
-    const INS_PER_SECOND: u64 = 700;
+    const INS_PER_SECOND: u64 = 2000;
 
     let mut regs = Registers::new();
     let mut mem = Memory::new();
 
-    // mem.load_rom(include_bytes!("../roms/IBM Logo.ch8"));
-    mem.load_rom(include_bytes!("../roms/test_opcode.ch8"));
+    if let Some(rom) = std::env::args().nth(1) {
+        mem.load_rom(&fs::read(rom).unwrap());
+    } else {
+        mem.load_rom(include_bytes!("../rom/1-chip8-logo.ch8"));
+    }
 
     let mut fb = FrameBuffer::new();
 
@@ -553,6 +570,9 @@ fn main() {
         Key::F,
     ];
 
+    let mut last_delay = Instant::now();
+    let mut last_sound = Instant::now();
+
     // main loop (700 CHIP-8 instructions per second)
     while fb.window.is_open() && !fb.window.is_key_down(Key::Escape) {
         // fetch:
@@ -563,9 +583,9 @@ fn main() {
         // execute
         //  run instruction
         let ins = mem.next_instruction();
-        println!("Fetching {:#06x}", ins);
+        // println!("Fetching {:#06x}", ins);
         let ins = OpCodes::decode_raw(ins);
-        println!("Decoded to {:#?}", ins);
+        // println!("Decoded to {:#?}", ins);
 
         match ins {
             OpCodes::Jump(addr) => {
@@ -580,6 +600,7 @@ fn main() {
             OpCodes::SetIndexRegister(addr) => mem.set_index(addr),
             OpCodes::ClearScreen => {
                 fb.clear_buffer();
+                fb.sync();
             }
             OpCodes::Display(reg_x, reg_y, height) => {
                 let (x, y) = (regs.get(reg_x), regs.get(reg_y));
@@ -593,6 +614,7 @@ fn main() {
 
                 let vf = fb.paint(x, y, sprite) as u8;
                 regs.set_register(0xF, vf);
+                fb.sync();
             }
             OpCodes::PushSubroutine(addr) => {
                 mem.stack.push(mem.pc.0); // store current instruction to return back
@@ -618,47 +640,45 @@ fn main() {
                 let (x, y) = (regs.get(vy), regs.get(vx));
                 let z = x.checked_add(y);
                 if let Some(z) = z {
-                    regs.set_register(0xf, 0);
                     regs.set_register(vx, z);
+                    regs.set_register(0xf, 0);
                 } else {
-                    regs.set_register(0xf, 1);
                     regs.set_register(vx, (((x as u16) + (y as u16)) & 0b11111111) as u8);
+                    regs.set_register(0xf, 1);
                 }
             }
             OpCodes::SubtractForward(vx, vy) => {
                 let (x, y) = (regs.get(vx), regs.get(vy));
                 let z = x.checked_sub(y);
                 if let Some(z) = z {
-                    regs.set_register(0xf, 1); // no borrow
                     regs.set_register(vx, z);
+                    regs.set_register(0xf, 1); // no borrow
                 } else {
-                    regs.set_register(0xf, 0); // borrow
                     regs.set_register(vx, x.wrapping_sub(y));
+                    regs.set_register(0xf, 0); // borrow
                 }
             }
             OpCodes::SubtractBackward(vx, vy) => {
                 let (x, y) = (regs.get(vx), regs.get(vy));
                 let z = y.checked_sub(x);
                 if let Some(z) = z {
-                    regs.set_register(0xf, 1); // no borrow
                     regs.set_register(vx, z);
+                    regs.set_register(0xf, 1); // no borrow
                 } else {
-                    regs.set_register(0xf, 0); // borrow
                     regs.set_register(vx, y.wrapping_sub(x));
+                    regs.set_register(0xf, 0); // borrow
                 }
             }
             OpCodes::LeftShift(vx, vy) => {
-                // optional copy
                 let vx_value = regs.get(vx);
 
-                let vf = vx_value | (0b1 << 7);
+                let vf = (vx_value >> 7) & 1;
                 let vx_value = vx_value << 1;
 
                 regs.set_register(vx, vx_value);
                 regs.set_register(0xf, vf);
             }
             OpCodes::RightShift(vx, vy) => {
-                // optional copy
                 let vx_value = regs.get(vx);
 
                 let vf = vx_value & 1;
@@ -723,17 +743,19 @@ fn main() {
             }
             OpCodes::SkipIfPressed(vx) => {
                 // TODO: experiment w key repeat
+                // println!("{:#?} {:#x}", fb.window.get_keys(), regs.get(vx));
                 if fb
                     .window
-                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::No)
+                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::Yes)
                 {
                     mem.pc.increment();
                 }
             }
             OpCodes::SkipIfNotPressed(vx) => {
+                // println!("{:#?} {:#x}", fb.window.get_keys(), regs.get(vx));
                 if !fb
                     .window
-                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::No)
+                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::Yes)
                 {
                     mem.pc.increment();
                 }
@@ -744,6 +766,7 @@ fn main() {
             OpCodes::GetKey(vx) => {
                 // TODO: pressed and then released ? or just pressed. original implementation was former
                 let pressed = fb.window.get_keys();
+                // println!("{:#?}", pressed);
                 if pressed.is_empty() {
                     mem.decrement_pc();
                 } else if let Some(key) = key_to_u8(pressed[0]) {
@@ -765,14 +788,15 @@ fn main() {
             OpCodes::Unimplemented => {}
         }
 
-        fb.sync();
+        if delay_timer.sync(last_delay) {
+            last_delay = Instant::now();
+        }
+
+        if sound_timer.sync(last_sound) {
+            last_sound = Instant::now();
+        }
 
         // simulate OG hardware
-        thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
+        // thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
     }
 }
-
-// BROKEN:
-// - 7XNN
-// - 8XY4
-// - 8XY5
