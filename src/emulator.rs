@@ -10,8 +10,9 @@ use crate::{
     registers::Registers,
 };
 
-const INS_PER_SECOND: u64 = 700;
+const INS_PER_SECOND: u64 = 1000;
 
+#[derive(Debug)]
 pub struct Timer {
     count: u8,
 }
@@ -27,19 +28,18 @@ impl Timer {
 
     pub fn sync(&mut self, last_updated: Instant) -> bool {
         if self.count == 0 {
-            return false;
+            return true;
+        } else {
+            /* println!(
+                "{} at {:#?}",
+                self.count,
+                Instant::now().elapsed().as_millis()
+            ); */
         }
         let elapsed_ms = last_updated.elapsed().as_millis();
-        if elapsed_ms > 1_000 / 60 {
-            let temp = self.count;
-
-            let num_ticks = elapsed_ms / (1_000 / 60);
-            if (self.count as u128) < num_ticks {
-                self.count = 0;
-            } else {
-                self.count -= num_ticks as u8;
-            }
-            println!("{} -> {}", temp, self.count);
+        if elapsed_ms >= 1_000 / 60 {
+            // past deadline
+            self.count -= 1;
             true
         } else {
             false
@@ -56,6 +56,7 @@ pub struct Emulator {
     last_delay: Instant,
     last_sound: Instant,
     last_ins: Instant,
+    last_fb: Instant,
 }
 
 impl Emulator {
@@ -77,6 +78,7 @@ impl Emulator {
         let last_delay = Instant::now();
         let last_sound = Instant::now();
         let last_ins = Instant::now();
+        let last_fb = Instant::now();
 
         Self {
             regs,
@@ -87,6 +89,7 @@ impl Emulator {
             last_delay,
             last_sound,
             last_ins,
+            last_fb,
         }
     }
 
@@ -248,6 +251,9 @@ impl Emulator {
                     digits.push(left_digit);
                     in_decimal /= 10;
                 }
+                while digits.len() < 3 {
+                    digits.push(0);
+                }
                 digits.reverse();
                 for (i, digit) in digits.iter().enumerate() {
                     self.mem.set(self.mem.index.0 + i as u16, *(digit));
@@ -257,7 +263,7 @@ impl Emulator {
                 // TODO: experiment w key repeat
                 if self.fb.window.is_key_pressed(
                     crate::display::KEYS[self.regs.get(vx) as usize],
-                    KeyRepeat::Yes,
+                    KeyRepeat::No,
                 ) {
                     self.mem.pc.increment();
                 }
@@ -266,7 +272,7 @@ impl Emulator {
                 if !self
                     .fb
                     .window
-                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::Yes)
+                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::No)
                 {
                     self.mem.pc.increment();
                 }
@@ -276,8 +282,7 @@ impl Emulator {
             OpCodes::CopyRegisterToSound(vx) => self.sound_timer.set(self.regs.get(vx)),
             OpCodes::GetKey(vx) => {
                 // TODO: pressed and then released ? or just pressed. original implementation was former
-                let pressed = self.fb.window.get_keys();
-                println!("{pressed:#?}");
+                let pressed = self.fb.window.get_keys_pressed(KeyRepeat::No);
                 if pressed.is_empty() {
                     self.mem.decrement_pc();
                 } else if let Some(key) = key_to_u8(pressed[0]) {
@@ -309,14 +314,17 @@ impl Emulator {
             self.last_delay = Instant::now();
         }
 
-        if self.sound_timer.sync(self.last_sound) {
+        /* if self.sound_timer.sync(self.last_sound) {
             self.last_sound = Instant::now();
-        }
+        } */
     }
 
-    pub fn sync(&mut self) {
-        self.fb.sync();
-        self.sync_timers();
+    pub fn sync_display(&mut self) {
+        let result = self.last_fb.elapsed().as_millis() >= (1_000 / 60);
+        if result {
+            self.fb.sync();
+            self.last_fb = Instant::now();
+        }
     }
 
     pub fn can_execute(&mut self) -> bool {

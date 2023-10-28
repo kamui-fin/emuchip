@@ -18,6 +18,9 @@
 
 // TODO: fix unsigned integer sizes inconsistency
 
+use std::time::Instant;
+
+use decode::OpCodes;
 use emulator::Emulator;
 
 mod decode;
@@ -26,14 +29,19 @@ mod emulator;
 mod memory;
 mod registers;
 
+// Separately:
+// CPU: 700 times per second
+// Display: 60 times per second
+// Timer: 60 times per second
+
 fn main() {
-    // main loop (~700 CHIP-8 instructions per second)
     let mut emu = Emulator::init();
     while emu.is_running() {
         if emu.can_execute() {
             let operation = emu.fetch_decode();
             emu.execute_ins(operation);
         }
-        emu.sync();
+        emu.sync_timers();
+        emu.sync_display();
     }
 }

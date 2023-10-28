@@ -23,7 +23,7 @@ impl FrameBuffer {
         .unwrap();
         window.set_position(500, 300);
         // Limit to max ~60 fps update rate
-        window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+        // window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
         Self {
             bit_buffer: vec![0; WIDTH * HEIGHT],
             pixel_buffer: vec![0; WIDTH * HEIGHT],
