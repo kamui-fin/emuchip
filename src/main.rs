@@ -18,11 +18,7 @@
 
 // TODO: fix unsigned integer sizes inconsistency
 
-use std::{
-    cmp, fs, process,
-    thread::{self, panicking},
-    time::{Duration, Instant},
-};
+use std::{fs, process, time::Instant};
 
 use minifb::{Key, KeyRepeat};
 use rand::{self, Rng};
@@ -32,7 +28,9 @@ use crate::display::FrameBuffer;
 mod display;
 
 type TypeAddr = u16; // in reality u12
-type TypeRegister = u8; // size of value contained in register AND register label itself
+                     // type TypeRegister = u8; // size of value contained in register AND register label itself
+
+const INS_PER_SECOND: u64 = 700;
 
 /* Low level emulation mappers */
 
@@ -52,7 +50,7 @@ impl Memory {
             bytes: [0; 4096],
             pc: ProgramCounter(0x200, 0),
             index: IndexRegister(0x0),
-            stack: Stack { addresses: vec![] },
+            stack: Stack::new(),
             font: Font::default(),
         }
     }
@@ -512,6 +510,25 @@ impl OpCodes {
     }
 }
 
+const KEYS: [Key; 16] = [
+    Key::Key0,
+    Key::Key1,
+    Key::Key2,
+    Key::Key3,
+    Key::Key4,
+    Key::Key5,
+    Key::Key6,
+    Key::Key7,
+    Key::Key8,
+    Key::Key9,
+    Key::A,
+    Key::B,
+    Key::C,
+    Key::D,
+    Key::E,
+    Key::F,
+];
+
 fn key_to_u8(key: Key) -> Option<u8> {
     match key {
         Key::Key0 => Some(0),
@@ -534,202 +551,206 @@ fn key_to_u8(key: Key) -> Option<u8> {
     }
 }
 
-fn main() {
-    const INS_PER_SECOND: u64 = 2000;
+struct Emulator {
+    regs: Registers,
+    mem: Memory,
+    fb: FrameBuffer,
+    delay_timer: Timer,
+    sound_timer: Timer,
+    last_delay: Instant,
+    last_sound: Instant,
+    last_ins: Instant,
+}
 
-    let mut regs = Registers::new();
-    let mut mem = Memory::new();
+impl Emulator {
+    fn init() -> Self {
+        let regs = Registers::new();
+        let mut mem = Memory::new();
 
-    if let Some(rom) = std::env::args().nth(1) {
-        mem.load_rom(&fs::read(rom).unwrap());
-    } else {
-        mem.load_rom(include_bytes!("../rom/1-chip8-logo.ch8"));
+        if let Some(rom) = std::env::args().nth(1) {
+            mem.load_rom_by_file(&rom);
+        } else {
+            mem.load_rom(include_bytes!("../rom/1-chip8-logo.ch8"));
+        }
+
+        let fb = FrameBuffer::new();
+
+        let delay_timer = Timer::new(0);
+        let sound_timer = Timer::new(0);
+
+        let last_delay = Instant::now();
+        let last_sound = Instant::now();
+        let last_ins = Instant::now();
+
+        Self {
+            regs,
+            mem,
+            fb,
+            delay_timer,
+            sound_timer,
+            last_delay,
+            last_sound,
+            last_ins,
+        }
     }
 
-    let mut fb = FrameBuffer::new();
-
-    let mut delay_timer = Timer::new(0);
-    let mut sound_timer = Timer::new(0);
-
-    let keys = [
-        Key::Key0,
-        Key::Key1,
-        Key::Key2,
-        Key::Key3,
-        Key::Key4,
-        Key::Key5,
-        Key::Key6,
-        Key::Key7,
-        Key::Key8,
-        Key::Key9,
-        Key::A,
-        Key::B,
-        Key::C,
-        Key::D,
-        Key::E,
-        Key::F,
-    ];
-
-    let mut last_delay = Instant::now();
-    let mut last_sound = Instant::now();
-
-    // main loop (700 CHIP-8 instructions per second)
-    while fb.window.is_open() && !fb.window.is_key_down(Key::Escape) {
-        // fetch:
-        //  read ins @ PC (2 bytes)
-        //  increment PC by 2 bytes
-        // decode
-        //  extract variables
-        // execute
-        //  run instruction
-        let ins = mem.next_instruction();
+    fn fetch_decode(&mut self) -> OpCodes {
+        let ins = self.mem.next_instruction();
         // println!("Fetching {:#06x}", ins);
         let ins = OpCodes::decode_raw(ins);
         // println!("Decoded to {:#?}", ins);
+        ins
+    }
 
+    fn execute_ins(&mut self, ins: OpCodes) {
         match ins {
             OpCodes::Jump(addr) => {
-                mem.set_pc(addr);
+                self.mem.set_pc(addr);
             }
             OpCodes::SetRegister(vx, nn) => {
-                regs.set_register(vx, nn);
+                self.regs.set_register(vx, nn);
             }
             OpCodes::AddToRegister(vx, nn) => {
-                regs.add_to_register(vx, nn);
+                self.regs.add_to_register(vx, nn);
             }
-            OpCodes::SetIndexRegister(addr) => mem.set_index(addr),
+            OpCodes::SetIndexRegister(addr) => self.mem.set_index(addr),
             OpCodes::ClearScreen => {
-                fb.clear_buffer();
-                fb.sync();
+                self.fb.clear_buffer();
+                self.fb.sync();
             }
             OpCodes::Display(reg_x, reg_y, height) => {
-                let (x, y) = (regs.get(reg_x), regs.get(reg_y));
+                let (x, y) = (self.regs.get(reg_x), self.regs.get(reg_y));
                 // From I to I + N, plot I at VX, VY
                 // Simply XOR with existing fb data
                 let mut sprite: Vec<u8> = vec![];
-                for addr in mem.index.0..mem.index.0 + height as u16 {
-                    let row = mem.get(addr); // 8 pixels wide because u8
+                for addr in self.mem.index.0..self.mem.index.0 + height as u16 {
+                    let row = self.mem.get(addr); // 8 pixels wide because u8
                     sprite.push(row);
                 }
 
-                let vf = fb.paint(x, y, sprite) as u8;
-                regs.set_register(0xF, vf);
-                fb.sync();
+                let vf = self.fb.paint(x, y, sprite) as u8;
+                self.regs.set_register(0xF, vf);
+                self.fb.sync();
             }
             OpCodes::PushSubroutine(addr) => {
-                mem.stack.push(mem.pc.0); // store current instruction to return back
-                mem.set_pc(addr);
+                self.mem.stack.push(self.mem.pc.0); // store current instruction to return back
+                self.mem.set_pc(addr);
             }
             OpCodes::PopSubroutine => {
-                let addr = mem.stack.pop().unwrap();
-                mem.set_pc(addr);
+                let addr = self.mem.stack.pop().unwrap();
+                self.mem.set_pc(addr);
             }
             OpCodes::CopyRegister(vx, vy) => {
-                regs.set_register(vx, regs.get(vy));
+                self.regs.set_register(vx, self.regs.get(vy));
             }
             OpCodes::Or(vx, vy) => {
-                regs.set_register(vx, regs.get(vy) | regs.get(vx));
+                self.regs
+                    .set_register(vx, self.regs.get(vy) | self.regs.get(vx));
             }
             OpCodes::And(vx, vy) => {
-                regs.set_register(vx, regs.get(vy) & regs.get(vx));
+                self.regs
+                    .set_register(vx, self.regs.get(vy) & self.regs.get(vx));
             }
             OpCodes::XOr(vx, vy) => {
-                regs.set_register(vx, regs.get(vy) ^ regs.get(vx));
+                self.regs
+                    .set_register(vx, self.regs.get(vy) ^ self.regs.get(vx));
             }
             OpCodes::Add(vx, vy) => {
-                let (x, y) = (regs.get(vy), regs.get(vx));
+                let (x, y) = (self.regs.get(vy), self.regs.get(vx));
                 let z = x.checked_add(y);
                 if let Some(z) = z {
-                    regs.set_register(vx, z);
-                    regs.set_register(0xf, 0);
+                    self.regs.set_register(vx, z);
+                    self.regs.set_register(0xf, 0);
                 } else {
-                    regs.set_register(vx, (((x as u16) + (y as u16)) & 0b11111111) as u8);
-                    regs.set_register(0xf, 1);
+                    self.regs
+                        .set_register(vx, (((x as u16) + (y as u16)) & 0b11111111) as u8);
+                    self.regs.set_register(0xf, 1);
                 }
             }
             OpCodes::SubtractForward(vx, vy) => {
-                let (x, y) = (regs.get(vx), regs.get(vy));
+                let (x, y) = (self.regs.get(vx), self.regs.get(vy));
                 let z = x.checked_sub(y);
                 if let Some(z) = z {
-                    regs.set_register(vx, z);
-                    regs.set_register(0xf, 1); // no borrow
+                    self.regs.set_register(vx, z);
+                    self.regs.set_register(0xf, 1); // no borrow
                 } else {
-                    regs.set_register(vx, x.wrapping_sub(y));
-                    regs.set_register(0xf, 0); // borrow
+                    self.regs.set_register(vx, x.wrapping_sub(y));
+                    self.regs.set_register(0xf, 0); // borrow
                 }
             }
             OpCodes::SubtractBackward(vx, vy) => {
-                let (x, y) = (regs.get(vx), regs.get(vy));
+                let (x, y) = (self.regs.get(vx), self.regs.get(vy));
                 let z = y.checked_sub(x);
                 if let Some(z) = z {
-                    regs.set_register(vx, z);
-                    regs.set_register(0xf, 1); // no borrow
+                    self.regs.set_register(vx, z);
+                    self.regs.set_register(0xf, 1); // no borrow
                 } else {
-                    regs.set_register(vx, y.wrapping_sub(x));
-                    regs.set_register(0xf, 0); // borrow
+                    self.regs.set_register(vx, y.wrapping_sub(x));
+                    self.regs.set_register(0xf, 0); // borrow
                 }
             }
             OpCodes::LeftShift(vx, vy) => {
-                let vx_value = regs.get(vx);
+                let vx_value = self.regs.get(vx);
 
                 let vf = (vx_value >> 7) & 1;
                 let vx_value = vx_value << 1;
 
-                regs.set_register(vx, vx_value);
-                regs.set_register(0xf, vf);
+                self.regs.set_register(vx, vx_value);
+                self.regs.set_register(0xf, vf);
             }
             OpCodes::RightShift(vx, vy) => {
-                let vx_value = regs.get(vx);
+                let vx_value = self.regs.get(vx);
 
                 let vf = vx_value & 1;
                 let vx_value = vx_value >> 1;
 
-                regs.set_register(vx, vx_value);
-                regs.set_register(0xf, vf);
+                self.regs.set_register(vx, vx_value);
+                self.regs.set_register(0xf, vf);
             }
             OpCodes::Random(vx, nn) => {
                 let mut rng = rand::thread_rng();
                 let ransuu = rng.gen_range(0..=nn);
-                regs.set_register(vx, nn & ransuu);
+                self.regs.set_register(vx, nn & ransuu);
             }
             OpCodes::JumpWithOffset(addr) => {
-                mem.set_pc(addr + regs.get(0) as u16);
+                self.mem.set_pc(addr + self.regs.get(0) as u16);
             }
             OpCodes::AddToIndex(vx) => {
                 // Most CHIP-8 interpreters' FX1E instructions do not affect VF
                 // with one exception: the CHIP-8 interpreter for the Commodore Amiga sets VF to 1 when there is a range overflow (I+VX>0xFFF)
                 // and to 0 when there is not.
                 // The only known game that depends on this behavior is Spacefight 2091!, while at least one game, Animal Race, depends on VF not being affected.
-                mem.set_index(mem.index.0 + regs.get(vx) as u16);
+                self.mem
+                    .set_index(self.mem.index.0 + self.regs.get(vx) as u16);
                 // TODO: optional amiga functionality support
             }
             OpCodes::SkipEqualConstant(vx, nn) => {
-                if regs.get(vx) == nn {
-                    mem.increment_pc();
+                if self.regs.get(vx) == nn {
+                    self.mem.increment_pc();
                 }
             }
             OpCodes::SkipNotEqualConstant(vx, nn) => {
-                if regs.get(vx) != nn {
-                    mem.increment_pc();
+                if self.regs.get(vx) != nn {
+                    self.mem.increment_pc();
                 }
             }
             OpCodes::SkipEqualRegister(vx, vy) => {
-                if regs.get(vx) == regs.get(vy) {
-                    mem.increment_pc();
+                if self.regs.get(vx) == self.regs.get(vy) {
+                    self.mem.increment_pc();
                 }
             }
             OpCodes::SkipNotEqualRegister(vx, vy) => {
-                if regs.get(vx) != regs.get(vy) {
-                    mem.increment_pc();
+                if self.regs.get(vx) != self.regs.get(vy) {
+                    self.mem.increment_pc();
                 }
             }
             OpCodes::PointChar(vx) => {
-                let char = regs.get(vx);
+                let char = self.regs.get(vx);
                 let addr = 0x50 + char * 5;
-                mem.set_index(addr as u16);
+                self.mem.set_index(addr as u16);
             }
             OpCodes::ToDecimal(vx) => {
-                let mut in_decimal = regs.get(vx);
+                let mut in_decimal = self.regs.get(vx);
                 let mut digits = vec![];
                 while in_decimal != 0 {
                     let left_digit = in_decimal % 10;
@@ -738,65 +759,88 @@ fn main() {
                 }
                 digits.reverse();
                 for (i, digit) in digits.iter().enumerate() {
-                    mem.set(mem.index.0 + i as u16, *(digit));
+                    self.mem.set(self.mem.index.0 + i as u16, *(digit));
                 }
             }
             OpCodes::SkipIfPressed(vx) => {
                 // TODO: experiment w key repeat
-                // println!("{:#?} {:#x}", fb.window.get_keys(), regs.get(vx));
-                if fb
+                if self
+                    .fb
                     .window
-                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::Yes)
+                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::Yes)
                 {
-                    mem.pc.increment();
+                    self.mem.pc.increment();
                 }
             }
             OpCodes::SkipIfNotPressed(vx) => {
-                // println!("{:#?} {:#x}", fb.window.get_keys(), regs.get(vx));
-                if !fb
+                if !self
+                    .fb
                     .window
-                    .is_key_pressed(keys[regs.get(vx) as usize], KeyRepeat::Yes)
+                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::Yes)
                 {
-                    mem.pc.increment();
+                    self.mem.pc.increment();
                 }
             }
-            OpCodes::CopyDelayToRegister(vx) => regs.set_register(vx, delay_timer.count),
-            OpCodes::CopyRegisterToDelay(vx) => delay_timer.set(regs.get(vx)),
-            OpCodes::CopyRegisterToSound(vx) => sound_timer.set(regs.get(vx)),
+            OpCodes::CopyDelayToRegister(vx) => self.regs.set_register(vx, self.delay_timer.count),
+            OpCodes::CopyRegisterToDelay(vx) => self.delay_timer.set(self.regs.get(vx)),
+            OpCodes::CopyRegisterToSound(vx) => self.sound_timer.set(self.regs.get(vx)),
             OpCodes::GetKey(vx) => {
                 // TODO: pressed and then released ? or just pressed. original implementation was former
-                let pressed = fb.window.get_keys();
-                // println!("{:#?}", pressed);
+                let pressed = self.fb.window.get_keys();
+                println!("{:#?}", pressed);
                 if pressed.is_empty() {
-                    mem.decrement_pc();
+                    self.mem.decrement_pc();
                 } else if let Some(key) = key_to_u8(pressed[0]) {
-                    regs.set_register(vx, key);
+                    self.regs.set_register(vx, key);
                 }
             }
             OpCodes::LoadRegisterFromMemory(vx) => {
                 for reg in 0..=vx {
-                    let reg_val = mem.get(mem.index.0 + reg as u16);
-                    regs.set_register(reg, reg_val);
+                    let reg_val = self.mem.get(self.mem.index.0 + reg as u16);
+                    self.regs.set_register(reg, reg_val);
                 }
             }
             OpCodes::StoreRegisterToMemory(vx) => {
                 for reg in 0..=vx {
-                    let reg_val = regs.get(reg);
-                    mem.set(mem.index.0 + reg as u16, reg_val);
+                    let reg_val = self.regs.get(reg);
+                    self.mem.set(self.mem.index.0 + reg as u16, reg_val);
                 }
             }
             OpCodes::Unimplemented => {}
         }
+    }
 
-        if delay_timer.sync(last_delay) {
-            last_delay = Instant::now();
+    fn is_running(&self) -> bool {
+        self.fb.window.is_open() && !self.fb.window.is_key_down(Key::Escape)
+    }
+
+    fn sync_timers(&mut self) {
+        if self.delay_timer.sync(self.last_delay) {
+            self.last_delay = Instant::now();
         }
 
-        if sound_timer.sync(last_sound) {
-            last_sound = Instant::now();
+        if self.sound_timer.sync(self.last_sound) {
+            self.last_sound = Instant::now();
         }
+    }
 
-        // simulate OG hardware
-        // thread::sleep(Duration::from_millis(1_000 / INS_PER_SECOND));
+    fn can_execute(&mut self) -> bool {
+        let result = self.last_ins.elapsed().as_millis() >= (1_000 / INS_PER_SECOND as u128);
+        if result {
+            self.last_ins = Instant::now();
+        }
+        result
+    }
+}
+
+fn main() {
+    // main loop (700 CHIP-8 instructions per second)
+    let mut emu = Emulator::init();
+    while emu.is_running() {
+        if emu.can_execute() {
+            let operation = emu.fetch_decode();
+            emu.execute_ins(operation);
+        }
+        emu.sync_timers();
     }
 }
