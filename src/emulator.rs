@@ -109,7 +109,6 @@ impl Emulator {
             OpCodes::SetIndexRegister(addr) => self.mem.set_index(addr),
             OpCodes::ClearScreen => {
                 self.fb.clear_buffer();
-                self.fb.sync();
             }
             OpCodes::Display(reg_x, reg_y, height) => {
                 let (x, y) = (self.regs.get(reg_x), self.regs.get(reg_y));
@@ -123,7 +122,6 @@ impl Emulator {
 
                 let vf = self.fb.paint(x, y, sprite) as u8;
                 self.regs.set_register(0xF, vf);
-                self.fb.sync();
             }
             OpCodes::PushSubroutine(addr) => {
                 self.mem.stack.push(self.mem.pc.0); // store current instruction to return back
@@ -314,6 +312,11 @@ impl Emulator {
         if self.sound_timer.sync(self.last_sound) {
             self.last_sound = Instant::now();
         }
+    }
+
+    pub fn sync(&mut self) {
+        self.fb.sync();
+        self.sync_timers();
     }
 
     pub fn can_execute(&mut self) -> bool {

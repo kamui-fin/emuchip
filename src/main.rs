@@ -34,6 +34,6 @@ fn main() {
             let operation = emu.fetch_decode();
             emu.execute_ins(operation);
         }
-        emu.sync_timers();
+        emu.sync();
     }
 }
