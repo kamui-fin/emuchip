@@ -1,65 +1,38 @@
+use crate::{
+    decode::OpCodes, display::FrameBuffer, memory::Memory, registers::Registers, sound::Sound,
+};
 use minifb::{Key, KeyRepeat};
 use rand::Rng;
-use std::time::Instant;
-
-use crate::{
-    decode::OpCodes,
-    display::{key_to_u8, FrameBuffer, KEYS},
-    memory::Memory,
-    registers::Registers,
-    sound::Sound,
-    timer::Timer,
-};
-
-const INS_PER_SECOND: u64 = 3000;
-const FPS: u64 = 60;
 
 pub struct Emulator {
     fb: FrameBuffer,
     pub regs: Registers,
     pub mem: Memory,
-    pub delay_timer: Timer,
-    pub sound_timer: Timer,
-    pub last_delay: Instant,
-    pub last_sound: Instant,
-    pub last_ins: Instant,
-    pub last_fb: Instant,
+    pub delay_timer: u8,
+    pub sound_timer: u8,
     pub sound: Sound,
 }
 
 impl Emulator {
     pub fn init() -> Self {
-        let regs = Registers::new();
         let mut mem = Memory::new();
 
         if let Some(rom) = std::env::args().nth(1) {
             mem.load_rom_by_file(&rom);
         } else {
-            mem.load_rom(include_bytes!("../rom/1-chip8-logo.ch8"));
+            panic!("supply a rom file")
         }
 
+        let regs = Registers::new();
         let fb = FrameBuffer::new();
-
-        let delay_timer = Timer::new(0);
-        let sound_timer = Timer::new(0);
-
-        let last_delay = Instant::now();
-        let last_sound = Instant::now();
-        let last_ins = Instant::now();
-        let last_fb = Instant::now();
-
         let sound = Sound::new();
 
         Self {
             regs,
             mem,
             fb,
-            delay_timer,
-            sound_timer,
-            last_delay,
-            last_sound,
-            last_ins,
-            last_fb,
+            delay_timer: 0,
+            sound_timer: 0,
             sound,
         }
     }
@@ -174,20 +147,15 @@ impl Emulator {
             }
             OpCodes::Random(vx, nn) => {
                 let mut rng = rand::thread_rng();
-                let ransuu = rng.gen_range(0..=nn);
+                let ransuu = rng.gen_range(0..=255);
                 self.regs.set_register(vx, nn & ransuu);
             }
             OpCodes::JumpWithOffset(addr) => {
                 self.mem.set_pc(addr + self.regs.get(0) as u16);
             }
             OpCodes::AddToIndex(vx) => {
-                // Most CHIP-8 interpreters' FX1E instructions do not affect VF
-                // with one exception: the CHIP-8 interpreter for the Commodore Amiga sets VF to 1 when there is a range overflow (I+VX>0xFFF)
-                // and to 0 when there is not.
-                // The only known game that depends on this behavior is Spacefight 2091!, while at least one game, Animal Race, depends on VF not being affected.
                 self.mem
                     .set_index(self.mem.index.0 + self.regs.get(vx) as u16);
-                // TODO: optional amiga functionality support
             }
             OpCodes::SkipEqualConstant(vx, nn) => {
                 if self.regs.get(vx) == nn {
@@ -231,33 +199,23 @@ impl Emulator {
                 }
             }
             OpCodes::SkipIfPressed(vx) => {
-                // TODO: experiment w key repeat
-                if self.fb.window.is_key_pressed(
-                    crate::display::KEYS[self.regs.get(vx) as usize],
-                    KeyRepeat::Yes,
-                ) {
+                self.fb.check_for_keys();
+                if self.fb.get_key_status_from_num(self.regs.get(vx)) {
                     self.mem.pc.increment();
                 }
             }
             OpCodes::SkipIfNotPressed(vx) => {
-                if !self
-                    .fb
-                    .window
-                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::Yes)
-                {
+                self.fb.check_for_keys();
+                if !self.fb.get_key_status_from_num(self.regs.get(vx)) {
                     self.mem.pc.increment();
                 }
             }
-            OpCodes::CopyDelayToRegister(vx) => self.regs.set_register(vx, self.delay_timer.count),
-            OpCodes::CopyRegisterToDelay(vx) => self.delay_timer.set(self.regs.get(vx)),
-            OpCodes::CopyRegisterToSound(vx) => self.sound_timer.set(self.regs.get(vx)),
+            OpCodes::CopyDelayToRegister(vx) => self.regs.set_register(vx, self.delay_timer),
+            OpCodes::CopyRegisterToDelay(vx) => self.delay_timer = self.regs.get(vx),
+            OpCodes::CopyRegisterToSound(vx) => self.sound_timer = self.regs.get(vx),
             OpCodes::GetKey(vx) => {
-                let pressed = self.fb.window.get_keys_pressed(KeyRepeat::Yes);
-                if pressed.is_empty() {
-                    self.mem.decrement_pc();
-                } else if let Some(key) = key_to_u8(pressed[0]) {
-                    self.regs.set_register(vx, key);
-                }
+                let key_pressed = self.fb.wait_for_key();
+                self.regs.set_register(vx, key_pressed);
             }
             OpCodes::LoadRegisterFromMemory(vx) => {
                 for reg in 0..=vx {
@@ -280,30 +238,26 @@ impl Emulator {
     }
 
     pub fn sync_timers(&mut self) {
-        if self.delay_timer.sync(self.last_delay) {
-            self.last_delay = Instant::now();
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
         }
-
-        if self.sound_timer.sync(self.last_sound) {
+        if self.sound_timer > 0 {
+            self.sound_timer -= 1;
             self.sound.beep();
-            self.last_sound = Instant::now();
         }
     }
 
     pub fn sync_display(&mut self) {
-        let result = self.last_fb.elapsed().as_millis() >= (1_000 / FPS as u128);
-        if result {
-            self.fb.sync();
-            self.last_fb = Instant::now();
-        }
+        self.fb.sync();
     }
 
-    pub fn can_execute(&mut self) -> bool {
-        let result = self.last_ins.elapsed().as_millis()
-            >= (1_000 / (INS_PER_SECOND as f64) as u128);
-        if result {
-            self.last_ins = Instant::now();
-        }
-        result
+    pub fn tick(&mut self) {
+        let operation = self.fetch_decode();
+        self.execute_ins(operation);
+    }
+
+    pub fn sync(&mut self) {
+        self.sync_timers();
+        self.sync_display();
     }
 }

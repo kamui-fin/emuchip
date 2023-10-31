@@ -17,6 +17,10 @@ impl Timer {
     }
 
     pub fn sync(&mut self, last_updated: Instant) -> bool {
+        if self.count != 0 {
+            self.count -= 1;
+        }
+        return true;
         if self.count == 0 {
             return false;
         }

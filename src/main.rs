@@ -1,8 +1,6 @@
 // 16 8-bit data registers named V0 to VF
 // I -> address register (12 bits)
 //
-// Implement stack storing return addresses
-//
 // Delay timer & Sound timer: Count down at 60 times / s until 0
 // Beep when sound timer is non-zero
 //
@@ -15,12 +13,12 @@
 //      X and Y: 4-bit register identifier
 
 // TODO: to run older games from the 1970s or 1980s, consider making a configurable option in your emulator to toggle between these behaviors.
-
 // TODO: fix unsigned integer sizes inconsistency
 //
-// Current TODO: Add debug interface supporting:
-// - Modify speed
-// - Next instruction, etc
+// Separately:
+// CPU: 700 times per second
+// Display: 60 times per second
+// Timer: 60 times per second
 
 mod decode;
 mod display;
@@ -30,21 +28,17 @@ mod registers;
 mod sound;
 mod timer;
 
-use emulator::Emulator;
+use std::{thread, time::Duration};
 
-// Separately:
-// CPU: 700 times per second
-// Display: 60 times per second
-// Timer: 60 times per second
+use emulator::Emulator;
 
 fn main() {
     let mut emu = Emulator::init();
     while emu.is_running() {
-        if emu.can_execute() {
-            let operation = emu.fetch_decode();
-            emu.execute_ins(operation);
+        for _ in 0..10 {
+            emu.tick();
         }
-        emu.sync_timers();
-        emu.sync_display();
+        emu.sync();
+        thread::sleep(Duration::from_millis(16));
     }
 }
