@@ -32,7 +32,7 @@ impl Keyboard {
         self.keys = [false; 16];
     }
 
-    pub fn update_key(&self, key: &Key) {
+    pub fn update_key(&mut self, key: &Key) {
         match key {
             Key::Key1 => self.keys[VKeys::Key1 as usize] = true,
             Key::Key2 => self.keys[VKeys::Key2 as usize] = true,

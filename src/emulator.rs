@@ -200,13 +200,13 @@ impl Emulator {
             }
             OpCodes::SkipIfPressed(vx) => {
                 self.fb.check_for_keys();
-                if self.fb.get_key_status_from_num(self.regs.get(vx)) {
+                if self.fb.keyboard.get_key_status_from_num(self.regs.get(vx)) {
                     self.mem.pc.increment();
                 }
             }
             OpCodes::SkipIfNotPressed(vx) => {
                 self.fb.check_for_keys();
-                if !self.fb.get_key_status_from_num(self.regs.get(vx)) {
+                if !self.fb.keyboard.get_key_status_from_num(self.regs.get(vx)) {
                     self.mem.pc.increment();
                 }
             }

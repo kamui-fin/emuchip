@@ -10,7 +10,7 @@ pub struct FrameBuffer {
     pixel_buffer: Vec<u32>,
     pub window: Window,
     should_update: bool,
-    keyboard: Keyboard,
+    pub keyboard: Keyboard,
 }
 
 impl FrameBuffer {
