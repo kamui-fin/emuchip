@@ -23,10 +23,10 @@
 mod decode;
 mod display;
 mod emulator;
+mod keyboard;
 mod memory;
 mod registers;
 mod sound;
-mod timer;
 
 use std::{thread, time::Duration};
 
