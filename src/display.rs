@@ -77,22 +77,22 @@ impl FrameBuffer {
 }
 
 pub const KEYS: [Key; 16] = [
-    Key::Key0,
+    Key::X,
     Key::Key1,
     Key::Key2,
     Key::Key3,
-    Key::Key4,
-    Key::Key5,
-    Key::Key6,
-    Key::Key7,
-    Key::Key8,
-    Key::Key9,
-    Key::A,
-    Key::B,
-    Key::C,
-    Key::D,
+    Key::Q,
+    Key::W,
     Key::E,
+    Key::A,
+    Key::S,
+    Key::D,
+    Key::Z,
+    Key::C,
+    Key::Key4,
+    Key::R,
     Key::F,
+    Key::V,
 ];
 
 pub fn key_to_u8(key: Key) -> Option<u8> {

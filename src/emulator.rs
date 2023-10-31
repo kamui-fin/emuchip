@@ -1,62 +1,30 @@
-use std::time::Instant;
-
 use minifb::{Key, KeyRepeat};
 use rand::Rng;
+use std::time::Instant;
 
 use crate::{
     decode::OpCodes,
     display::{key_to_u8, FrameBuffer, KEYS},
     memory::Memory,
     registers::Registers,
+    sound::Sound,
+    timer::Timer,
 };
 
-const INS_PER_SECOND: u64 = 1000;
-
-#[derive(Debug)]
-pub struct Timer {
-    count: u8,
-}
-
-impl Timer {
-    pub fn new(init_count: u8) -> Self {
-        Self { count: init_count }
-    }
-
-    pub fn set(&mut self, value: u8) {
-        self.count = value;
-    }
-
-    pub fn sync(&mut self, last_updated: Instant) -> bool {
-        if self.count == 0 {
-            return true;
-        } else {
-            /* println!(
-                "{} at {:#?}",
-                self.count,
-                Instant::now().elapsed().as_millis()
-            ); */
-        }
-        let elapsed_ms = last_updated.elapsed().as_millis();
-        if elapsed_ms >= 1_000 / 60 {
-            // past deadline
-            self.count -= 1;
-            true
-        } else {
-            false
-        }
-    }
-}
+const INS_PER_SECOND: u64 = 3000;
+const FPS: u64 = 60;
 
 pub struct Emulator {
-    regs: Registers,
-    mem: Memory,
     fb: FrameBuffer,
-    delay_timer: Timer,
-    sound_timer: Timer,
-    last_delay: Instant,
-    last_sound: Instant,
-    last_ins: Instant,
-    last_fb: Instant,
+    pub regs: Registers,
+    pub mem: Memory,
+    pub delay_timer: Timer,
+    pub sound_timer: Timer,
+    pub last_delay: Instant,
+    pub last_sound: Instant,
+    pub last_ins: Instant,
+    pub last_fb: Instant,
+    pub sound: Sound,
 }
 
 impl Emulator {
@@ -80,6 +48,8 @@ impl Emulator {
         let last_ins = Instant::now();
         let last_fb = Instant::now();
 
+        let sound = Sound::new();
+
         Self {
             regs,
             mem,
@@ -90,6 +60,7 @@ impl Emulator {
             last_sound,
             last_ins,
             last_fb,
+            sound,
         }
     }
 
@@ -263,7 +234,7 @@ impl Emulator {
                 // TODO: experiment w key repeat
                 if self.fb.window.is_key_pressed(
                     crate::display::KEYS[self.regs.get(vx) as usize],
-                    KeyRepeat::No,
+                    KeyRepeat::Yes,
                 ) {
                     self.mem.pc.increment();
                 }
@@ -272,7 +243,7 @@ impl Emulator {
                 if !self
                     .fb
                     .window
-                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::No)
+                    .is_key_pressed(KEYS[self.regs.get(vx) as usize], KeyRepeat::Yes)
                 {
                     self.mem.pc.increment();
                 }
@@ -281,8 +252,7 @@ impl Emulator {
             OpCodes::CopyRegisterToDelay(vx) => self.delay_timer.set(self.regs.get(vx)),
             OpCodes::CopyRegisterToSound(vx) => self.sound_timer.set(self.regs.get(vx)),
             OpCodes::GetKey(vx) => {
-                // TODO: pressed and then released ? or just pressed. original implementation was former
-                let pressed = self.fb.window.get_keys_pressed(KeyRepeat::No);
+                let pressed = self.fb.window.get_keys_pressed(KeyRepeat::Yes);
                 if pressed.is_empty() {
                     self.mem.decrement_pc();
                 } else if let Some(key) = key_to_u8(pressed[0]) {
@@ -306,7 +276,7 @@ impl Emulator {
     }
 
     pub fn is_running(&self) -> bool {
-        self.fb.window.is_open() && !self.fb.window.is_key_down(Key::Escape)
+        self.fb.window.is_open() && !self.fb.window.is_key_pressed(Key::Escape, KeyRepeat::Yes)
     }
 
     pub fn sync_timers(&mut self) {
@@ -314,13 +284,14 @@ impl Emulator {
             self.last_delay = Instant::now();
         }
 
-        /* if self.sound_timer.sync(self.last_sound) {
+        if self.sound_timer.sync(self.last_sound) {
+            self.sound.beep();
             self.last_sound = Instant::now();
-        } */
+        }
     }
 
     pub fn sync_display(&mut self) {
-        let result = self.last_fb.elapsed().as_millis() >= (1_000 / 60);
+        let result = self.last_fb.elapsed().as_millis() >= (1_000 / FPS as u128);
         if result {
             self.fb.sync();
             self.last_fb = Instant::now();
@@ -328,7 +299,8 @@ impl Emulator {
     }
 
     pub fn can_execute(&mut self) -> bool {
-        let result = self.last_ins.elapsed().as_millis() >= (1_000 / INS_PER_SECOND as u128);
+        let result = self.last_ins.elapsed().as_millis()
+            >= (1_000 / (INS_PER_SECOND as f64) as u128);
         if result {
             self.last_ins = Instant::now();
         }

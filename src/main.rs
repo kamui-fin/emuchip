@@ -17,17 +17,20 @@
 // TODO: to run older games from the 1970s or 1980s, consider making a configurable option in your emulator to toggle between these behaviors.
 
 // TODO: fix unsigned integer sizes inconsistency
-
-use std::time::Instant;
-
-use decode::OpCodes;
-use emulator::Emulator;
+//
+// Current TODO: Add debug interface supporting:
+// - Modify speed
+// - Next instruction, etc
 
 mod decode;
 mod display;
 mod emulator;
 mod memory;
 mod registers;
+mod sound;
+mod timer;
+
+use emulator::Emulator;
 
 // Separately:
 // CPU: 700 times per second
