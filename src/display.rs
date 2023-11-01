@@ -57,12 +57,16 @@ impl FrameBuffer {
     }
 
     pub fn paint(&mut self, x: u8, y: u8, sprite: Vec<u8>) -> bool {
+        let (x, y) = (x as usize % (WIDTH), y as usize % (HEIGHT));
         let mut vf = false;
         for (i, row) in sprite.iter().enumerate() {
             for j in 0..8 {
                 let (nx, ny) = (x as usize + j, y as usize + i);
                 let index = (ny * WIDTH) + nx;
                 let bit = (row >> (7 - j)) & 1;
+                if index >= self.bit_buffer.len() {
+                    continue; // should not wrap, cut-off instead
+                }
                 let previous = self.bit_buffer[index];
                 self.bit_buffer[index] ^= bit as u32;
                 if previous != self.bit_buffer[index] && self.bit_buffer[index] == 0 {
