@@ -12,7 +12,6 @@
 //      N: 4-bit constant
 //      X and Y: 4-bit register identifier
 
-// TODO: to run older games from the 1970s or 1980s, consider making a configurable option in your emulator to toggle between these behaviors.
 // TODO: fix unsigned integer sizes inconsistency
 //
 // Separately:

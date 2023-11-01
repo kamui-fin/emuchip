@@ -229,11 +229,6 @@ impl OpCodes {
             0xF => {
                 let x = raw.next_register();
                 let f_type = raw.next_u8();
-                /* println!("Original -> {:04x}", ins);
-                println!(
-                    "Got an 0xF instruction with vx = {:02x} and end = {:02x}",
-                    x, f_type
-                ); */
                 match f_type {
                     0x07 => Self::CopyDelayToRegister(x),
                     0x0A => Self::GetKey(x),

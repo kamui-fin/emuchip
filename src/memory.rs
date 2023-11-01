@@ -102,10 +102,6 @@ impl Memory {
             self.bytes[start_index..start_index + bytes.len()].copy_from_slice(bytes);
         }
 
-        /* for i in start_index..start_index + bytes.len() {
-            println!("{:03x?} = {:02x?}", i, self.bytes[i]);
-        } */
-
         // load font
         let start_index = 0x50;
         self.bytes[start_index..start_index + self.font.data.len()]
